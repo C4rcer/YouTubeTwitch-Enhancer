@@ -1,0 +1,10 @@
+# Build output
+web-ext-artifacts/
+
+# Dependencies / tooling
+node_modules/
+*.log
+npm-debug.log*
+
+# web-ext sign artifact (local submission id)
+.amo-upload-uuid
