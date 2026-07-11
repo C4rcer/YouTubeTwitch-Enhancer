@@ -44,6 +44,10 @@ manager page.
   "Members only" disappear from every page — home, search, channel pages,
   related. Leave it off if you're a member of some channels and want to see
   their members-only uploads.
+- **Hide paid videos (v4.6, optional, off by default).** Videos badged
+  "Pay to watch", "Buy or rent" or "Buy" are removed from home, search,
+  channel and related feeds. Free-with-ads movies and shows stay visible,
+  and age-rating badges are left untouched.
 - **Clean-up extras** — ads/promos/nudges (on by default), plus optional
   hiding of Mixes, playlist tiles, news/topic shelves, the sidebar loading
   spinner, and end-screen/pause-screen suggestions.
