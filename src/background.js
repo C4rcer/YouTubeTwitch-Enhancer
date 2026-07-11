@@ -147,7 +147,7 @@
             return commSet(key, mine
                 .filter(s => !s.actionType || s.actionType === 'skip')
                 .filter(s => s.locked || s.votes == null || s.votes >= 0)
-                .map(s => ({ category: s.category, start: s.segment[0], end: s.segment[1] })));
+                .map(s => ({ category: s.category, start: s.segment[0], end: s.segment[1], uuid: s.UUID })));
         } catch (e) {
             commFailAt.sb = Date.now();
             return null;
@@ -196,6 +196,74 @@
         }
     }
 
+    /* ---- SponsorBlock submissions & votes (always user-initiated) -----
+     * Both carry the local SponsorBlock user ID: a random secret that
+     * accumulates reputation server-side. It lives in its own storage key
+     * (outside `data`) so list-clearing and sync never touch it, and the
+     * options page lets users paste the ID from the official SponsorBlock
+     * extension so an existing reputation carries over.
+     * ------------------------------------------------------------------ */
+    const SB_UID_KEY = 'sbUserId';
+
+    async function sbUserId() {
+        const r = await api.storage.local.get(SB_UID_KEY);
+        let uid = r[SB_UID_KEY];
+        if (!uid) {
+            const bytes = new Uint8Array(32);
+            crypto.getRandomValues(bytes);
+            uid = [...bytes].map(b => b.toString(16).padStart(2, '0')).join('');
+            await api.storage.local.set({ [SB_UID_KEY]: uid });
+        }
+        return uid;
+    }
+
+    function sbUserAgent() {
+        const v = (api.runtime.getManifest() || {}).version || '0';
+        return 'YouTubeTwitchEnhancer/' + v;
+    }
+
+    async function sbSubmit(videoId, start, end, category) {
+        if (!videoId || !(end > start) || start < 0) return { ok: false, error: 'invalid segment' };
+        try {
+            const r = await fetch(SB_API + '/api/skipSegments', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    videoID: videoId,
+                    userID: await sbUserId(),
+                    userAgent: sbUserAgent(),
+                    segments: [{ segment: [start, end], category, actionType: 'skip' }]
+                })
+            });
+            if (!r.ok) {
+                const text = (await r.text()).slice(0, 300);
+                return { ok: false, error: 'HTTP ' + r.status + (text ? ': ' + text : '') };
+            }
+            // Drop cached lookups for this video so the new segment shows up.
+            for (const key of [...commCache.keys()]) {
+                if (key.startsWith('sb:' + videoId + ':')) commCache.delete(key);
+            }
+            return { ok: true };
+        } catch (e) {
+            return { ok: false, error: String(e && e.message || e) };
+        }
+    }
+
+    async function sbVote(uuid, type) {
+        if (!uuid) return { ok: false, error: 'no segment id' };
+        try {
+            const params = new URLSearchParams({ UUID: uuid, userID: await sbUserId(), type: String(type) });
+            const r = await fetch(SB_API + '/api/voteOnSponsorTime?' + params.toString(), { method: 'POST' });
+            if (!r.ok) {
+                const text = (await r.text()).slice(0, 300);
+                return { ok: false, error: 'HTTP ' + r.status + (text ? ': ' + text : '') };
+            }
+            return { ok: true };
+        } catch (e) {
+            return { ok: false, error: String(e && e.message || e) };
+        }
+    }
+
     // Messages from the content scripts (they can't open extension pages,
     // manage tabs, or make CSP-free cross-origin fetches themselves).
     let dropClaimTabAt = 0;
@@ -209,6 +277,12 @@
         }
         if (msg.action === 'ytb-ryd-votes') {
             return rydVotes(String(msg.videoId || ''));
+        }
+        if (msg.action === 'ytb-sb-submit') {
+            return sbSubmit(String(msg.videoId || ''), Number(msg.start), Number(msg.end), String(msg.category || 'sponsor'));
+        }
+        if (msg.action === 'ytb-sb-vote') {
+            return sbVote(String(msg.uuid || ''), msg.type ? 1 : 0);
         }
         if (msg.action === 'ytbtw-open-options') {
             api.tabs.create({ url: api.runtime.getURL('src/twitch-options.html') }).catch(() => {});

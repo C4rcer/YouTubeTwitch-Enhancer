@@ -88,10 +88,19 @@ the separate SponsorBlock / DeArrow / Return YouTube Dislike extensions:
 - **SponsorBlock: skip segments.** Auto-skips crowdsourced sponsor reads,
   self-promos, like/subscribe reminders and (optionally) intros, outros,
   previews, non-music sections and filler — each category has its own toggle.
-  Every skip shows a notice with an **Unskip** button (7 s) that jumps back
-  to the start of the segment and stops auto-skipping it. Lookups use SponsorBlock's
+  Every skip shows a notice with **Unskip** (jumps back and stops
+  auto-skipping that segment) and **Report** (downvotes a bad segment)
+  buttons. Lookups use SponsorBlock's
   k-anonymity endpoint: only a 4-character hash prefix of the video ID leaves
   your browser, so the service cannot tell which video you are watching.
+- **SponsorBlock: create & vote (v4.4).** A shield button on every video's
+  player (while SponsorBlock is on) opens a panel: mark a segment's start and
+  end at the playhead (±0.5 s nudges, local test of the jump), pick a
+  category and submit it to SponsorBlock; existing segments can be up- or
+  down-voted. Submissions and votes carry a local SponsorBlock user ID,
+  generated automatically — migrating from the official SponsorBlock
+  extension? Paste your user ID into the options page and your reputation
+  carries over.
 - **DeArrow: community titles & thumbnails.** Replaces clickbait titles (and,
   via a separate heavier toggle, thumbnails) with community-submitted ones
   where they exist — on tiles and the watch page.
@@ -291,7 +300,10 @@ Scoped exceptions, each behind its own toggle:
   SponsorBlock/DeArrow (sponsor.ajay.app) and Return YouTube Dislike.
   SponsorBlock lookups send only a hashed video-ID prefix (k-anonymity);
   DeArrow and RYD lookups send the video ID. These requests are made from
-  the extension's background page, not the YouTube tab.
+  the extension's background page, not the YouTube tab. Submitting or
+  voting on a SponsorBlock segment (always a deliberate click) additionally
+  sends the exact video ID, the segment timestamps and your local
+  SponsorBlock user ID.
 - **Sidebar hover previews** (Twitch, v4.2) load one thumbnail per hover
   from Twitch's own CDN.
 
