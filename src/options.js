@@ -220,9 +220,13 @@
     async function doWatchedClear() {
         if (!WDB) return;
         if (!confirm('Erase your entire local watched history? This cannot be undone.')) return;
-        await WDB.clear();
-        await updateWatchedCount();
-        watchedStatus('Watched history cleared.');
+        try {
+            await WDB.clear();
+            await updateWatchedCount();
+            watchedStatus('Watched history cleared.');
+        } catch (e) {
+            watchedStatus('Could not clear watched history. Your existing data was kept.', true);
+        }
     }
 
     async function renderSyncStatus() {

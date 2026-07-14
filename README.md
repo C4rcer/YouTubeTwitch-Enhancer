@@ -28,7 +28,7 @@ manager page.
   stay, one-click unblock available) — best-effort at not registering a view.
 - **Remove all Shorts** — sidebar entry, channel tabs, shelves, and
   `/shorts/<id>` URLs auto-redirect to the normal `/watch` player.
-- **Hide already-watched videos** past a progress threshold (default 75%),
+- **Hide already-watched videos** past a progress threshold (default 90%),
   scoped per surface: Home, Subscriptions, Search, Related, Channel pages,
   Playlists — each individually toggleable (playlists off by default so
   Watch Later keeps showing progress).
@@ -81,8 +81,11 @@ manager page.
 - **Import / export / sync.** One-click JSON export/import (merge, no
   duplicates) and optional **Firefox Sync** so your block lists follow your
   Firefox account. Settings stay per-device.
-- **Reduce flashing.** Watched videos are held hidden from first paint instead
-  of popping in and vanishing.
+- **Reduce flashing.** A pre-paint gate holds new cards invisible while keeping
+  their layout space, then reveals only cards that survive local filtering.
+  The gate fails open after three seconds if browser storage is unavailable.
+  Continuation batches and later title/progress hydration are classified in the
+  same mutation-observer turn, minimizing visible hide-after-render windows.
 
 ## Community data integrations (v4.3, all off by default)
 
@@ -250,6 +253,22 @@ Temporary add-ons are removed when Firefox restarts. For a permanent install,
 sign via [addons.mozilla.org/developers](https://addons.mozilla.org/developers/)
 (`web-ext sign`).
 
+### Automated checks
+
+The regression suite has no npm dependencies and runs on Node.js:
+
+```sh
+node --test --test-isolation=none tests/content-filter.test.js tests/watched-db.test.js
+```
+
+It exercises a synthetic 600-card channel, continuation appends, renderer
+recycling and late hydration, every primary tile-filter reason, suppression of
+redundant full scans (including legacy shelf insertion handling), identity-safe
+DeArrow replacement, watched-history and Undo-operation sharding, failed
+reads/writes with autonomous recovery, simultaneous-tab convergence, distributed
+clears and reset re-entry, stale loaders, late stale-generation writes, metadata
+repair, live operation migration, and Undo against in-flight snapshots.
+
 ## Usage
 
 ### Block a channel
@@ -323,14 +342,33 @@ network request.
 
 ## How it works
 
-- **`src/content.js`** runs at `document_start`. A debounced `MutationObserver`
-  (added/removed nodes only) plus a 2 s safety interval re-runs the cleanup
-  pass on infinite scroll / SPA navigation; passes are skipped while the tab
-  is hidden and caught up on focus. Channel matching merges the `@handle`,
-  `UC…` ID, and display name found in a tile and compares case-insensitively;
-  tiles are tagged per config version so unchanged tiles aren't re-scanned.
-  Tiles are hidden in place (CSS) rather than removed, which avoids fighting
-  YouTube's renderer and is what makes audit mode and Undo possible.
+- **`src/content.js`** runs at `document_start`. A static startup gate keeps
+  card geometry in place while settings and watched history load, with a
+  three-second fail-open if initialization cannot finish. After boot, a
+  page-level observer handles inserts and recycled `href`s; scoped card/comment
+  observers handle relevant progress `style`, title, badge, thumbnail `src`, and
+  text hydration. Each mutation batch is canonicalized and deduplicated before
+  classification, while legacy shelf filters search only newly inserted
+  subtrees, so tile-only work does not queue a second full-page scan. Unrelated
+  page/player work uses a trailing debounce, and a 10 s pass remains as recovery.
+  Cache
+  entries include the filter generation, route, channel attribution, video ID,
+  and last decision, so recycled renderers are re-evaluated and stripped managed
+  classes can be repaired cheaply. Matches are hidden in place (CSS), rather
+  than removed from Polymer's DOM, which keeps audit mode, layout, and Undo
+  reliable. Optional SponsorBlock/DeArrow tile lookups use a persistent queue
+  capped at six concurrent requests per service. Decorations are tied to video
+  identity, so virtualized cards cannot keep the previous video's badge, title,
+  or thumbnail; SponsorBlock category changes invalidate dependent badge results.
+- **`src/watched-db.js`** keeps watched IDs and watched Undo operations in 64
+  matching in-memory/storage shards for constant-time card lookups and bounded
+  writes. Quiet-window batching, bounded write latency, write retry, autonomous
+  startup-read backoff, and background flushes keep persistence outside the
+  filtering hot path. Generation-tagged clears propagate across tabs;
+  stale-generation key
+  overwrites and stale counts are detected and repaired. Timestamped
+  remove/restore operations make Undo deterministic across tabs, and the prior
+  monolithic operation record migrates automatically.
 - **`src/twitch.js`** runs at `document_start` on `www.twitch.tv` (and
   `clips.twitch.tv`, where it only records the clip you just created). Same
   observer/interval pattern as the YouTube script. Stream cards are hidden at
@@ -356,7 +394,8 @@ network request.
 manifest.json
 icons/icon.svg
 src/
-  content.js     content.css    — the on-page engine (YouTube)
+  content.js     content.css    — incremental on-page engine (YouTube)
+  watched-db.js                 — sharded local watched-history store
   twitch.js      twitch.css     — the on-page engine (Twitch)
   background.js                 — context menus, onboarding, Firefox Sync
   common.js                     — shared storage/import/export helpers
@@ -365,6 +404,9 @@ src/
   twitch-options.html/.js       — full manager (Twitch)
   onboarding.html               — first-run guide
   ui.css                        — shared popup/options styling
+tests/
+  content-filter.test.js        — 600-card/incremental DOM regression harness
+  watched-db.test.js            — storage, retry, and cross-tab regression tests
 ```
 
 ## Support
