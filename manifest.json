@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "YouTube/Twitch Enhancer",
-  "version": "4.6.0",
+  "version": "4.7.1",
   "description": "Block channels, categories, tags & keywords on YouTube & Twitch. Hide Shorts & watched videos, auto-claim points/drops/moments, emotes, chat filters, speed control, compressor, cinema mode. Opt-in SponsorBlock, DeArrow & RYD.",
 
   "browser_specific_settings": {
@@ -24,6 +24,7 @@
 
   "permissions": [
     "storage",
+    "unlimitedStorage",
     "contextMenus",
     "*://www.youtube.com/*",
     "*://m.youtube.com/*",
@@ -38,7 +39,7 @@
   "content_scripts": [
     {
       "matches": ["*://www.youtube.com/*", "*://m.youtube.com/*"],
-      "js": ["src/content.js"],
+      "js": ["src/watched-db.js", "src/content.js"],
       "css": ["src/content.css"],
       "run_at": "document_start",
       "all_frames": false

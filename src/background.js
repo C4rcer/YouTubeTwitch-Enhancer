@@ -36,6 +36,12 @@
                 documentUrlPatterns: YT_PATTERNS
             });
             api.contextMenus.create({
+                id: 'ytb-mark-watched',
+                title: 'Mark video as watched',
+                contexts: ['all'],
+                documentUrlPatterns: YT_PATTERNS
+            });
+            api.contextMenus.create({
                 id: 'ytb-sep',
                 type: 'separator',
                 contexts: ['all'],

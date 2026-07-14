@@ -21,6 +21,10 @@
     const STORAGE_KEY = 'data';
     const LEGACY_HIDDEN_KEY = 'ytShortsBlocker_manuallyHiddenIds';
 
+    // Persistent watched-video database (src/watched-db.js runs first in the
+    // same content-script scope). All watched-history storage goes through it.
+    const WatchedDB = ((typeof self !== 'undefined') ? self : window).YTBWatchedDB || null;
+
     // When the extension updates in place, Firefox orphans the old content
     // script: its DOM listeners keep firing but its storage/API access is
     // dead. Every marker we leave on DOM nodes is therefore tagged with this
@@ -34,7 +38,7 @@
         enabled: true,               // master switch for the whole extension
         blockShorts: true,
         hideWatched: true,
-        watchedThreshold: 75,
+        watchedThreshold: 90,
         // Per-surface scope for watched-hiding. Playlists default OFF because
         // seeing progress in Watch Later / playlists is usually the point.
         watchedHome: true,
@@ -111,6 +115,7 @@
     let lastPointerDown = 0;          // timestamp of last pointerdown (menu-open hint)
     let lastNativeVolGesture = 0;     // last real interaction with YouTube's own volume control
     let nativeVolPointerDown = false; // a pointer is currently held on YouTube's volume slider
+    let curChannelInfo = null;        // channel identity of the current channel page (per pass)
 
     /* ------------------------------------------------------------------
      * Selectors (shared by removal passes)
@@ -149,6 +154,9 @@
 
     const PROGRESS_SELECTORS = [
         'ytd-thumbnail-overlay-resume-playback-renderer #progress',
+        // Structural fallback: the fill is a width-styled child of the resume
+        // overlay regardless of its (obfuscated) class name.
+        'ytd-thumbnail-overlay-resume-playback-renderer [style*="width"]',
         '#progress[style*="width"]',
         '.ytThumbnailOverlayProgressBarHostWatchedProgressBarSegment',
         'yt-thumbnail-overlay-progress-bar-view-model div[style*="width"]',
@@ -549,13 +557,11 @@
         return target;
     }
 
-    // Un-hide everything we've hidden and drop the per-tile check cache, so
+    // Un-hide everything we've hidden and drop the per-tile evaluation cache, so
     // the next pass re-evaluates from scratch. Used by undo + master switch.
     function unhideAll() {
-        document.querySelectorAll('.ytb-removed').forEach(el => {
-            el.classList.remove('ytb-removed');
-            delete el.dataset.ytbChk;
-        });
+        document.querySelectorAll('.ytb-removed').forEach(el => el.classList.remove('ytb-removed'));
+        document.querySelectorAll('[data-ytb-p]').forEach(el => { delete el.dataset.ytbP; });
     }
 
     function removeContainingTile(node) {
@@ -930,6 +936,25 @@
         return key === null ? true : !!settings[key];
     }
 
+    // Record a tile YouTube's progress bar reports as watched into the local
+    // database (migration: newly-detected watched videos are remembered so we
+    // still hide them once YouTube inevitably drops the bar), and attribute it
+    // to the current channel page for the "Watched X/Y" badge.
+    function markTileWatched(node) {
+        if (!WatchedDB || !node) return;
+        const tile = node.closest(INNER_CONTAINERS) || node;
+        const id = getVideoIdFromNode(tile);
+        if (!id) return;
+        // A video the user manually hid stays categorized as hidden, even if it
+        // still shows a progress bar — the explicit hide wins over the tally.
+        if (hiddenSet.has(id)) {
+            if (curChannelInfo) WatchedDB.recordChannelHidden(curChannelInfo, id);
+            return;
+        }
+        WatchedDB.markWatched(id);
+        if (curChannelInfo) WatchedDB.recordChannelVideo(curChannelInfo, id);
+    }
+
     function processWatchedByProgressBar() {
         document.querySelectorAll(PROGRESS_SELECTORS).forEach(bar => {
             if (bar.closest('.ytb-removed')) return;   // tile already hidden
@@ -937,6 +962,7 @@
             if (!w) return;
             const pct = parseFloat(w);
             if (isNaN(pct) || pct < settings.watchedThreshold) return;
+            markTileWatched(bar);
             removeContainingTile(bar);
         });
     }
@@ -951,6 +977,7 @@
                 const pct = parseFloat(w);
                 if (isNaN(pct)) continue;
                 if (pct >= settings.watchedThreshold) {
+                    markTileWatched(container);
                     removeContainingTile(container);
                     return;
                 }
@@ -958,35 +985,62 @@
         });
     }
 
-    // Single pass handling blocked video IDs, blocked channels, and keywords.
+    // Single pass handling blocked video IDs, watched-database hits, blocked
+    // channels, and keywords.
     function processTiles() {
         const checkChannels = state.blockedChannels.length > 0;
         const checkKeywords = keywordMatchers.length > 0;
-        if (!hiddenSet.size && !checkChannels && !checkKeywords) return;
+        // Backwards-compatible watched-hiding: a tile is hidden if its ID is in
+        // the local database OR (via the progress-bar passes above) YouTube
+        // still shows it as watched. This one is gated by the same setting and
+        // per-surface scope as the progress-bar detection.
+        const checkWatchedDb = !!WatchedDB && WatchedDB.count() > 0 &&
+                               settings.hideWatched && watchedAllowedHere();
+        const attributeChannel = !!(WatchedDB && curChannelInfo);
+        if (!hiddenSet.size && !checkChannels && !checkKeywords && !checkWatchedDb) return;
+        // Cache each tile's outcome at a "generation" tag so the burst of passes
+        // when YouTube rebuilds the grid (switching Latest/Popular/Oldest, or
+        // infinite-scroll) doesn't re-read every tile every time — a grid tile's
+        // watched/hidden status is stable while it sits there. The tag changes
+        // whenever the config (configVersion) or the active checks change, which
+        // forces a full re-evaluation. Writing data-* attributes is invisible to
+        // the childList MutationObserver, so this never triggers extra passes.
+        const gen = configVersion + '|' +
+            (checkWatchedDb ? 'w' : '') + (attributeChannel ? 'a' : '') +
+            (checkChannels ? 'c' : '') + (checkKeywords ? 'k' : '');
         const tiles = document.querySelectorAll(INNER_CONTAINERS);
         for (const tile of tiles) {
-            if (tile.closest('.ytb-removed')) continue;   // already hidden
+            if (tile.dataset.ytbP === gen) continue;      // already evaluated at this gen
+            if (tile.closest('.ytb-removed')) { tile.dataset.ytbP = gen; continue; }
             const id = getVideoIdFromNode(tile);
             if (hiddenSet.size && id && hiddenSet.has(id)) {
+                // On a channel page, count this toward that channel's Hidden tally.
+                if (attributeChannel) WatchedDB.recordChannelHidden(curChannelInfo, id);
                 removeTile(tile);
+                tile.dataset.ytbP = gen;
                 continue;
             }
-            if (checkChannels || checkKeywords) {
-                const key = (id || tile.tagName) + '|' + configVersion;
-                if (tile.dataset.ytbChk === key) continue;   // already cleared at this config
-                if (checkChannels && tileMatchesBlockedChannel(getChannelInfoFromNode(tile))) {
+            if (checkWatchedDb && id && WatchedDB.isWatched(id)) {
+                // On a channel page, count this toward that channel's tally.
+                if (attributeChannel) WatchedDB.recordChannelVideo(curChannelInfo, id);
+                removeTile(tile);
+                tile.dataset.ytbP = gen;
+                continue;
+            }
+            if (checkChannels && tileMatchesBlockedChannel(getChannelInfoFromNode(tile))) {
+                removeTile(tile);
+                tile.dataset.ytbP = gen;
+                continue;
+            }
+            if (checkKeywords) {
+                const title = getTitleFromNode(tile).toLowerCase();
+                if (title && keywordMatchers.some(fn => fn(title))) {
                     removeTile(tile);
+                    tile.dataset.ytbP = gen;
                     continue;
                 }
-                if (checkKeywords) {
-                    const title = getTitleFromNode(tile).toLowerCase();
-                    if (title && keywordMatchers.some(fn => fn(title))) {
-                        removeTile(tile);
-                        continue;
-                    }
-                }
-                tile.dataset.ytbChk = key;
             }
+            tile.dataset.ytbP = gen;   // survivor at this generation
         }
     }
 
@@ -1111,6 +1165,145 @@
             expandedVideoId = vid;
             try { btn.click(); } catch (e) { /* ignore */ }
         }
+    }
+
+    /* ==================================================================
+     * 4a. Watched-video database: the robust, YouTube-independent signal.
+     *   - A timeupdate hook on the main player records the video you're
+     *     watching once playback passes the threshold, so the database is
+     *     built from your actual viewing rather than the flaky progress bar.
+     *   - On a channel page, a "Watched N / total" badge shows how many of
+     *     that channel's videos are in the database (denominator scraped
+     *     from the channel header).
+     * ================================================================== */
+    let watchedMarkedVid = null;      // last video already recorded this session
+
+    function ensureWatchedHook(v) {
+        if (!v || !WatchedDB || v.dataset.ytbWatchHook === INSTANCE_ID) return;
+        v.dataset.ytbWatchHook = INSTANCE_ID;
+        v.addEventListener('timeupdate', () => {
+            if (retired || !settings.enabled || !settings.hideWatched) return;
+            if (location.pathname !== '/watch' || isLivePlayer()) return;
+            const vid = watchVideoId();
+            if (!vid || vid === watchedMarkedVid) return;
+            const dur = v.duration, cur = v.currentTime;
+            if (!isFinite(dur) || dur <= 0) return;
+            if ((cur / dur) * 100 >= settings.watchedThreshold) {
+                watchedMarkedVid = vid;
+                WatchedDB.markWatched(vid);
+                const owner = getWatchPageOwnerInfo();
+                if (owner) WatchedDB.recordChannelVideo(owner, vid);
+            }
+        });
+    }
+
+    // "513 videos" from the channel header, across the most common UI
+    // languages, plus a CJK fallback. Thousands separators (',' '.' ' ')
+    // are stripped so "1,234 videos" -> 1234. Returns null if not shown.
+    const VIDEO_COUNT_RE = /([\d][\d., \s]*)\s*(?:videos?|vídeos?|vidéos?|videa|filmy|видео|βίντεο|video)\b/i;
+    const VIDEO_COUNT_CJK = /([\d][\d., \s]*)\s*(?:本の動画|個の動画|動画|部影片|個影片|个视频|部视频|视频|동영상|개의\s*동영상)/;
+
+    function channelHeaderEl() {
+        return document.querySelector('yt-page-header-renderer') ||
+               document.querySelector('ytd-browse[page-subtype="channels"] #page-header') ||
+               document.querySelector('ytm-c4-tabbed-header-renderer, .c4-tabbed-header') ||
+               document.querySelector('#channel-header');
+    }
+
+    function channelHeaderMetaEl() {
+        const header = channelHeaderEl();
+        if (!header) return null;
+        return header.querySelector('yt-content-metadata-view-model') ||
+               header.querySelector('#meta, #channel-header-container, .page-header-view-model-wiz__page-header-content') ||
+               header;
+    }
+
+    function parseChannelVideoTotal() {
+        // Read the metadata row (subscribers · videos), not the whole header —
+        // the header also carries the "Videos" tab label, which would misfire.
+        const header = channelHeaderMetaEl() || channelHeaderEl();
+        if (!header) return null;
+        const text = header.textContent || '';
+        const m = text.match(VIDEO_COUNT_RE) || text.match(VIDEO_COUNT_CJK);
+        if (!m) return null;
+        const n = parseInt(m[1].replace(/[., \s]/g, ''), 10);
+        return isNaN(n) ? null : n;
+    }
+
+    // The metadata row itself (handle · subscribers · videos). Used as the
+    // insertion anchor so our stats line sits directly beneath it, left-aligned
+    // and in the same font, rather than being crammed into the flex row.
+    function channelMetaViewModel() {
+        return document.querySelector('yt-page-header-renderer yt-content-metadata-view-model') ||
+               document.querySelector('#page-header yt-content-metadata-view-model') ||
+               null;
+    }
+
+    function removeChannelBadge() {
+        const el = document.getElementById('ytb-channel-stats');
+        if (el) el.remove();
+    }
+
+    function statSpan(label, value, tip) {
+        const span = document.createElement('span');
+        span.className = 'ytb-stat';
+        if (tip) span.title = tip;
+        span.appendChild(document.createTextNode(label + ' '));
+        const b = document.createElement('b');
+        b.textContent = value;
+        span.appendChild(b);
+        return span;
+    }
+
+    // A "Watched N / total  ·  Hidden M" line. Watched always shows on a channel
+    // page; Hidden only when there is at least one, to avoid clutter.
+    //
+    // CRITICAL: this must be idempotent. runAll fires on every DOM mutation, and
+    // this element lives inside the observed <body> subtree, so rebuilding it
+    // unconditionally makes every render trigger another pass — a runaway loop
+    // that pins the CPU and stops YouTube from loading thumbnails. So we only
+    // touch the DOM when the values (cached in a data-* attribute the childList
+    // observer ignores) or the placement actually change.
+    function renderChannelStats(watched, total, hidden) {
+        const meta = channelMetaViewModel();
+        const host = channelHeaderMetaEl();
+        if (!meta && !host) return;
+        const sig = watched + '/' + (total == null ? '?' : total) + '|' + hidden;
+        let el = document.getElementById('ytb-channel-stats');
+        const placedOk = !!el && (meta
+            ? (el.parentElement === meta.parentElement && el.previousElementSibling === meta)
+            : (el.parentElement === host));
+        if (el && el.dataset.ytbSig === sig && placedOk) return;   // nothing to do
+        if (!el) {
+            el = document.createElement('div');
+            el.id = 'ytb-channel-stats';
+        }
+        if (!placedOk) {
+            if (meta && meta.parentElement) meta.parentElement.insertBefore(el, meta.nextSibling);
+            else if (host) host.appendChild(el);
+        }
+        if (el.dataset.ytbSig === sig) return;   // placement fixed, content already current
+        el.dataset.ytbSig = sig;
+        el.textContent = '';
+        el.appendChild(statSpan('Watched',
+            (total != null && total > 0) ? (watched + ' / ' + total) : String(watched),
+            'Videos from this channel in your local watched history'));
+        if (hidden > 0) {
+            const sep = document.createElement('span');
+            sep.className = 'ytb-stat-sep';
+            sep.textContent = '•';
+            el.appendChild(sep);
+            el.appendChild(statSpan('Hidden', String(hidden),
+                'Videos from this channel you have hidden'));
+        }
+    }
+
+    function updateChannelWatchBadge() {
+        if (!WatchedDB || !curChannelInfo) { removeChannelBadge(); return; }
+        const total = parseChannelVideoTotal();
+        if (total != null) WatchedDB.setChannelTotal(curChannelInfo, total);
+        const stats = WatchedDB.getChannelStats(curChannelInfo) || { watched: 0, total: null, hidden: 0 };
+        renderChannelStats(stats.watched, stats.total != null ? stats.total : total, stats.hidden || 0);
     }
 
     /* ==================================================================
@@ -1872,10 +2065,15 @@
                 if (slider) slider.remove();
                 document.querySelectorAll('.ytb-cinema-btn, .ytb-extra-btn').forEach(b => b.remove());
                 document.querySelectorAll('.ytb-sb-badge').forEach(b => b.remove());
+                removeChannelBadge();
                 clearLoop();
                 exitCinema();
                 return;
             }
+            // Channel identity of the current channel page (null elsewhere).
+            // Resolved once per pass and shared by the watched-database
+            // attribution and the "Watched N / total" badge.
+            curChannelInfo = WatchedDB ? getChannelInfoFromChannelPage() : null;
             // flattenRows() intentionally not called: physically moving every
             // tile out of its row generated add/remove churn and fought the
             // renderer. The display:contents CSS already reflows the grid.
@@ -1898,7 +2096,7 @@
             processComments();                 // comment keyword filtering (watch pages)
             // Menu scanning is expensive (*[role="menuitem"]); only do it shortly
             // after a press, when a menu may actually have opened.
-            if (Date.now() - lastPointerDown < 3000) injectBlockChannelMenuItem();
+            if (Date.now() - lastPointerDown < 3000) injectCustomMenuItems();
             processBlackout(pageInfo);
             if (settings.maxQuality && !blackoutActive) applyMaxQuality();
             applyVolumeBoost();
@@ -1910,6 +2108,8 @@
             preventIdlePause();
             enforceAutoplayOff();
             autoExpandDescription();
+            ensureWatchedHook(playerVideo());   // record the video being watched
+            updateChannelWatchBadge();          // "Watched N / total" on channel pages
             ensureSponsorBlock();
             updateSbMarkers();
             processSbBadges();
@@ -1933,6 +2133,9 @@
     function undoHideVideo(id) {
         const i = state.hiddenVideoIds.indexOf(id);
         if (i >= 0) state.hiddenVideoIds.splice(i, 1);
+        // Drop it from the per-channel "Hidden" tally too (hiding and watching
+        // are tracked separately, so this never touches the watched database).
+        if (WatchedDB) WatchedDB.removeHidden(id);
         unhideAll();   // pass re-hides anything that should stay hidden
         persist();
     }
@@ -1949,9 +2152,36 @@
         const id = getVideoIdFromNode(tile);
         if (!id) { toast('Could not read a video ID here.'); return; }
         if (!hiddenSet.has(id)) state.hiddenVideoIds.push(id);
+        // Count it against this video's channel (separate from watched).
+        if (WatchedDB) {
+            const chan = getChannelInfoFromNode(tile) || curChannelInfo;
+            if (chan) WatchedDB.recordChannelHidden(chan, id);
+        }
         removeTile(tile);
         persist();
         toast('Hid video', id, () => undoHideVideo(id));
+    }
+
+    // Add a video to the watched database (distinct from hiding it). Attributes
+    // it to the video's channel so the channel-page "Watched N / total" grows.
+    function markWatchedAtTarget(target) {
+        if (!WatchedDB) return;
+        const tile = findTileFromTarget(target);
+        let id = tile ? getVideoIdFromNode(tile) : null;
+        let chan = tile ? getChannelInfoFromNode(tile) : null;
+        if (!id && location.pathname === '/watch') {
+            id = watchVideoId();
+            chan = getWatchPageOwnerInfo();
+        }
+        if (!id) { toast('Could not read a video ID here.'); return; }
+        WatchedDB.markWatched(id);
+        if (chan) WatchedDB.recordChannelVideo(chan, id);
+        if (tile) removeTile(tile);   // watched videos are hidden
+        toast('Marked as watched', id, () => {
+            WatchedDB.remove(id);
+            unhideAll();
+            runAll();
+        });
     }
 
     function channelLabel(info) {
@@ -2129,48 +2359,109 @@
         return e;
     }
 
-    function buildMenuItem(info) {
+    // Video the currently-open menu belongs to (its owner tile, or the main
+    // watch video when the menu was opened from the video's own metadata).
+    function resolveMenuVideoId() {
+        if (menuOwnerTile) return getVideoIdFromNode(menuOwnerTile);
+        if (menuOwnerIsMain) return watchVideoId();
+        return null;
+    }
+
+    // Outline icons (stroked via .ytb-mi-icon svg CSS) matching native menu items.
+    function drawBlockIcon(svg) {
+        svg.appendChild(svgEl('circle', { cx: 12, cy: 12, r: 9 }));
+        svg.appendChild(svgEl('line', { x1: 5.6, y1: 5.6, x2: 18.4, y2: 18.4 }));
+    }
+    function drawWatchedIcon(svg) {   // check inside a circle
+        svg.appendChild(svgEl('circle', { cx: 12, cy: 12, r: 9 }));
+        svg.appendChild(svgEl('polyline', { points: '7.8 12.4 10.8 15.4 16.2 9' }));
+    }
+    function drawHideIcon(svg) {      // eye with a slash through it
+        svg.appendChild(svgEl('path', { d: 'M3 12s3.6-6 9-6 9 6 9 6-3.6 6-9 6-9-6-9-6Z' }));
+        svg.appendChild(svgEl('circle', { cx: 12, cy: 12, r: 2.6 }));
+        svg.appendChild(svgEl('line', { x1: 4, y1: 4, x2: 20, y2: 20 }));
+    }
+
+    function buildMenuItem(label, drawIcon, onClick) {
         const el = document.createElement('div');
         el.className = 'ytb-menu-item';
         el.setAttribute('role', 'menuitem');
         el.tabIndex = 0;
-        el._info = info;
         el._ownerTile = menuOwnerTile;
         const icon = document.createElement('div');
         icon.className = 'ytb-mi-icon';
-        const svg = svgEl('svg', { viewBox: '0 0 24 24', 'stroke-width': '2', 'stroke-linecap': 'round' });
-        svg.appendChild(svgEl('circle', { cx: 12, cy: 12, r: 9 }));
-        svg.appendChild(svgEl('line', { x1: 5.6, y1: 5.6, x2: 18.4, y2: 18.4 }));
+        const svg = svgEl('svg', {
+            viewBox: '0 0 24 24', 'stroke-width': '2',
+            'stroke-linecap': 'round', 'stroke-linejoin': 'round'
+        });
+        drawIcon(svg);
         icon.appendChild(svg);
         const text = document.createElement('div');
         text.className = 'ytb-mi-text';
-        text.textContent = 'Block channel';
+        text.textContent = label;
         el.appendChild(icon);
         el.appendChild(text);
-        el.addEventListener('click', onInjectedBlockClick);
+        el.addEventListener('click', onClick);
         el.addEventListener('keydown', (ev) => {
-            if (ev.key === 'Enter' || ev.key === ' ') onInjectedBlockClick(ev);
+            if (ev.key === 'Enter' || ev.key === ' ') onClick(ev);
         });
         return el;
     }
 
-    function injectBlockChannelMenuItem() {
+    function onInjectedMarkWatchedClick(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        const id = resolveMenuVideoId();
+        const chan = resolveMenuChannelInfo();
+        closeNativeMenu();
+        if (!WatchedDB || !id) { toast('Could not read a video for this menu.'); return; }
+        WatchedDB.markWatched(id);
+        if (chan) WatchedDB.recordChannelVideo(chan, id);
+        if (menuOwnerTile) removeTile(menuOwnerTile);
+        toast('Marked as watched', id, () => { WatchedDB.remove(id); unhideAll(); runAll(); });
+    }
+
+    function onInjectedHideClick(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        const id = resolveMenuVideoId();
+        const chan = resolveMenuChannelInfo();
+        closeNativeMenu();
+        if (!id) { toast('Could not read a video for this menu.'); return; }
+        if (!hiddenSet.has(id)) state.hiddenVideoIds.push(id);
+        if (WatchedDB && chan) WatchedDB.recordChannelHidden(chan, id);
+        if (menuOwnerTile) removeTile(menuOwnerTile);
+        persist();
+        toast('Hid video', id, () => undoHideVideo(id));
+    }
+
+    // Our custom rows, in display order. "Mark as watched" / "Hide video" are
+    // omitted from the main watch video's own menu (you can't usefully hide the
+    // video you're on); "Block channel" applies everywhere.
+    function injectCustomMenuItems() {
         const menu = findOpenVideoMenu();
         if (!menu) {
-            // No video menu open — drop any stray injected item.
+            // No video menu open — drop any stray injected items.
             document.querySelectorAll('.ytb-menu-item').forEach(el => el.remove());
             return;
         }
         const existing = menu.container.querySelector('.ytb-menu-item');
         if (existing) {
-            if (existing._ownerTile === menuOwnerTile) return;  // still the same menu
-            existing.remove();                                  // owner changed — refresh
+            if (existing._ownerTile === menuOwnerTile) return;   // still the same menu
+            menu.container.querySelectorAll('.ytb-menu-item').forEach(el => el.remove());
         }
-        const item = buildMenuItem(resolveMenuChannelInfo());
-        if (menu.dnr && menu.dnr.parentNode === menu.container) {
-            menu.container.insertBefore(item, menu.dnr.nextSibling);
-        } else {
-            menu.container.appendChild(item);
+        const items = [];
+        if (WatchedDB && menuOwnerTile) {
+            items.push(buildMenuItem('Mark as watched', drawWatchedIcon, onInjectedMarkWatchedClick));
+        }
+        if (menuOwnerTile) {
+            items.push(buildMenuItem('Hide video', drawHideIcon, onInjectedHideClick));
+        }
+        items.push(buildMenuItem('Block channel', drawBlockIcon, onInjectedBlockClick));
+        const anchor = (menu.dnr && menu.dnr.parentNode === menu.container) ? menu.dnr.nextSibling : null;
+        for (const item of items) {
+            if (anchor) menu.container.insertBefore(item, anchor);
+            else menu.container.appendChild(item);
         }
     }
 
@@ -2974,6 +3265,10 @@
         e.preventDefault();
         e.stopPropagation();
         if (!hiddenSet.has(id)) state.hiddenVideoIds.push(id);
+        if (WatchedDB) {   // count against the channel (separate from watched)
+            const chan = tile ? getChannelInfoFromNode(tile) : curChannelInfo;
+            if (chan) WatchedDB.recordChannelHidden(chan, id);
+        }
         if (still) still.style.display = 'none';
         else removeTile(tile);
         persist();
@@ -3044,6 +3339,7 @@
         switch (msg.action) {
             case 'ytb-block-channel': blockChannelAtTarget(lastContextTarget); break;
             case 'ytb-hide-video':    hideVideoAtTarget(lastContextTarget); break;
+            case 'ytb-mark-watched':  markWatchedAtTarget(lastContextTarget); break;
         }
     });
 
@@ -3151,6 +3447,9 @@
         }
         lastSerialized = JSON.stringify(state);
         rebuildDerived();
+        // Load the watched-video set into memory once, so the first pass can
+        // do O(1) isWatched() lookups without touching storage.
+        if (WatchedDB) { try { await WatchedDB.whenReady(); } catch (e) { /* start empty */ } }
         if (migrateLegacyLocalStorage()) persist();   // one-time import of old list
         bootObserver();
     }

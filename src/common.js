@@ -13,7 +13,7 @@ const YTB = (function () {
         enabled: true,               // master switch for the whole extension
         blockShorts: true,
         hideWatched: true,
-        watchedThreshold: 75,
+        watchedThreshold: 90,
         // Per-surface scope for watched-hiding. Playlists default OFF because
         // seeing progress in Watch Later / playlists is usually the point.
         watchedHome: true,
