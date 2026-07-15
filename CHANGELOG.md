@@ -1,6 +1,18 @@
 # Changelog
 
-## Unreleased
+## 4.7.2 — 2026-07-14
+
+### Fixed
+
+- Reconcile DeArrow watch-page titles against the route, watch container, and player identity during YouTube SPA navigation so Firefox cannot retain or reapply the previous video's title.
+- Recover the new video's native title from verified player data when Firefox reuses the old heading, including videos without a DeArrow replacement.
+- Defer watch-title writes while YouTube's route, watch container, and player identities disagree, then reprocess on page-data and lookup completion.
+
+### Validation
+
+- Add two watch-page SPA regressions; the dependency-free suite now contains 35 tests.
+
+## 4.7.1 — 2026-07-14
 
 ### Fixed
 

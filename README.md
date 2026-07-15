@@ -264,7 +264,8 @@ node --test --test-isolation=none tests/content-filter.test.js tests/watched-db.
 It exercises a synthetic 600-card channel, continuation appends, renderer
 recycling and late hydration, every primary tile-filter reason, suppression of
 redundant full scans (including legacy shelf insertion handling), identity-safe
-DeArrow replacement, watched-history and Undo-operation sharding, failed
+DeArrow replacement across recycled tiles and watch-page SPA navigation,
+watched-history and Undo-operation sharding, failed
 reads/writes with autonomous recovery, simultaneous-tab convergence, distributed
 clears and reset re-entry, stale loaders, late stale-generation writes, metadata
 repair, live operation migration, and Undo against in-flight snapshots.

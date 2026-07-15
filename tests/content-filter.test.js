@@ -134,9 +134,18 @@ class FakeRoot {
     }
 }
 
-function loadContentHarness(watched) {
+function loadContentHarness(watched, options = {}) {
     const listeners = {};
     const rootAttributes = new Map();
+    const watchTitle = options.watchTitle || null;
+    const playerData = options.playerData || null;
+    const flexyData = options.flexyData || null;
+    const moviePlayer = playerData ? {
+        getVideoData() { return playerData; }
+    } : null;
+    const watchFlexy = flexyData ? {
+        getAttribute(name) { return name === 'video-id' ? flexyData.videoId : null; }
+    } : null;
     const documentElement = {
         dataset: {},
         setAttribute(name, value) { rootAttributes.set(name, value); },
@@ -149,9 +158,13 @@ function loadContentHarness(watched) {
         body: new FakeRoot([]),
         addEventListener(type, fn) { (listeners[type] ||= []).push(fn); },
         dispatchEvent() { return true; },
-        querySelector() { return null; },
+        querySelector(selector) {
+            if (watchTitle && selector.includes('ytd-watch-metadata h1')) return watchTitle;
+            if (watchFlexy && selector === 'ytd-watch-flexy[video-id]') return watchFlexy;
+            return null;
+        },
         querySelectorAll() { return []; },
-        getElementById() { return null; }
+        getElementById(id) { return id === 'movie_player' ? moviePlayer : null; }
     };
 
     let revision = 0;
@@ -176,9 +189,13 @@ function loadContentHarness(watched) {
             storage: { onChanged: noopListener }
         },
         document,
-        location: { pathname: '/', href: 'https://www.youtube.com/', origin: 'https://www.youtube.com' },
+        location: {
+            pathname: '/', search: '', href: 'https://www.youtube.com/',
+            origin: 'https://www.youtube.com'
+        },
         console,
         URL,
+        URLSearchParams,
         Math,
         Date,
         Set,
@@ -204,10 +221,17 @@ function loadContentHarness(watched) {
         processLegacyMutationFilters,
         prepareDeArrowTitleIdentity,
         applyDeArrowTitle,
+        processDeArrowWatchPage,
+        beginDeArrowWatchNavigation,
+        finishDeArrowWatchNavigation,
+        refreshDeArrowWatchTitle,
+        setDeArrowCache(vid, value) { deCache.set(vid, value); },
         mutationNeedsMaintenance,
         setPath(path) {
-            location.pathname = path;
-            location.href = location.origin + path;
+            const url = new URL(path, location.origin);
+            location.pathname = url.pathname;
+            location.search = url.search;
+            location.href = url.href;
         },
         configure(input) {
             state = normalize(input || {});
@@ -635,4 +659,80 @@ test('DeArrow originals follow video identity and native rehydration', () => {
         'recycling must never overwrite an already-hydrated B title with A');
     api.applyDeArrowTitle(alreadyHydrated, 'video-b', 'Community B', alreadyHydrated);
     assert.equal(alreadyHydrated.dataset.ytbDeOriginalTitle, 'Native B already present');
+});
+
+test('watch-page DeArrow repairs a stale SPA title from current player data', () => {
+    const title = new FakeDecoratedText('Native A');
+    const playerData = { video_id: 'video-a', title: 'Native A' };
+    const flexyData = { videoId: 'video-a' };
+    const api = loadContentHarness(
+        new Set(), { watchTitle: title, playerData, flexyData }
+    );
+
+    api.configure({ settings: { enabled: true, deArrowTitles: true } });
+    api.setPath('/watch?v=video-a');
+    api.setDeArrowCache('video-a', { title: 'Community A' });
+    api.processDeArrowWatchPage();
+    assert.equal(title.textContent, 'Community A');
+
+    // Firefox can switch both the route and player without hydrating the reused
+    // heading again. The previous community title must not survive that state.
+    api.setPath('/watch?v=video-b');
+    playerData.video_id = 'video-b';
+    playerData.title = 'Native B';
+    api.setDeArrowCache('video-b', {});
+    api.processDeArrowWatchPage();
+    assert.equal(title.textContent, 'Community A',
+        'flexy A must block route/player B from mutating A ownership');
+    assert.equal(title.dataset.ytbDeTitle, 'video-a');
+
+    flexyData.videoId = 'video-b';
+    api.refreshDeArrowWatchTitle();
+    assert.equal(title.textContent, 'Native B',
+        'verified player data must release stale A even without a B replacement');
+    assert.equal(title.dataset.ytbDeTitle, undefined);
+    assert.equal(title.dataset.ytbDeAppliedTitle, undefined);
+    assert.equal(title.dataset.ytbDeAwaitTitle, undefined);
+    assert.equal(title.dataset.ytbDeStaleTitle, undefined);
+
+    api.setDeArrowCache('video-b', { title: 'Community B' });
+    api.refreshDeArrowWatchTitle();
+
+    assert.equal(title.textContent, 'Community B');
+    assert.equal(title.dataset.ytbDeOriginalTitle, 'Native B');
+    assert.equal(title.dataset.ytbDeOriginalTitleVideo, 'video-b');
+    assert.equal(title.dataset.ytbDeAwaitTitle, undefined);
+});
+
+test('watch-page DeArrow does not overwrite early native hydration during navigation', () => {
+    const title = new FakeDecoratedText('Native A');
+    const playerData = { video_id: 'video-a', title: 'Native A' };
+    const flexyData = { videoId: 'video-a' };
+    const api = loadContentHarness(
+        new Set(), { watchTitle: title, playerData, flexyData }
+    );
+
+    api.configure({ settings: { enabled: true, deArrowTitles: true } });
+    api.setPath('/watch?v=video-a');
+    api.setDeArrowCache('video-a', { title: 'Community A' });
+    api.processDeArrowWatchPage();
+    assert.equal(title.textContent, 'Community A');
+
+    api.beginDeArrowWatchNavigation();
+    title.textContent = 'Native B';
+    api.processDeArrowWatchPage();
+    assert.equal(title.textContent, 'Native B',
+        'a route-A maintenance pass must not rewrite A over an early B hydration');
+
+    api.setPath('/watch?v=video-b');
+    flexyData.videoId = 'video-b';
+    api.setDeArrowCache('video-b', { title: 'Community B' });
+    api.finishDeArrowWatchNavigation();
+    api.refreshDeArrowWatchTitle();
+
+    assert.equal(playerData.video_id, 'video-a',
+        'the test keeps player data stale to exercise the flexy-authoritative path');
+    assert.equal(title.textContent, 'Community B');
+    assert.equal(title.dataset.ytbDeOriginalTitle, 'Native B');
+    assert.equal(title.dataset.ytbDeOriginalTitleVideo, 'video-b');
 });

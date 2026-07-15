@@ -2259,6 +2259,8 @@
     const DE_CONCURRENCY = 6;
     let deArrowAppliedTitles = !!document.querySelector('[data-ytb-de-title]');
     let deArrowAppliedThumbs = !!document.querySelector('img[data-ytb-de-thumb]');
+    let deArrowWatchNavigating = false;
+    let deArrowWatchNavigationTimer = null;
 
     function deLookup(vid, tile) {
         if (deInFlight.has(vid)) return;
@@ -2276,7 +2278,16 @@
             .catch(() => deCache.set(vid, {}))
             .finally(() => {
                 deInFlight.delete(vid);
-                if (!retired) queueTileEnhancements();
+                if (!retired) {
+                    // Watch-page lookups are not part of the card queue. Apply a
+                    // resolved title immediately instead of waiting for the
+                    // low-frequency recovery pass.
+                    if (settings.enabled && settings.deArrowTitles &&
+                        watchVideoId() === vid) {
+                        processDeArrowWatchPage();
+                    }
+                    queueTileEnhancements();
+                }
             });
     }
 
@@ -2642,22 +2653,108 @@
         }
     }
 
+    function readWatchPlayerData() {
+        const player = document.getElementById('movie_player');
+        if (!player) return null;
+        try {
+            // Firefox exposes page-world player methods through wrappedJSObject.
+            // Keep wrapper/property access inside the guard as Xray access itself
+            // can throw while the player is being replaced.
+            const playerApi = player.wrappedJSObject || player;
+            if (!playerApi || typeof playerApi.getVideoData !== 'function') return null;
+            const raw = playerApi.getVideoData();
+            const data = raw && (raw.wrappedJSObject || raw);
+            if (!data) return null;
+            return {
+                videoId: cleanText(String(data.video_id || data.videoId || '')),
+                title: cleanText(String(data.title || ''))
+            };
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function watchFlexyVideoId() {
+        const flexy = document.querySelector('ytd-watch-flexy[video-id]');
+        return cleanText(flexy && flexy.getAttribute &&
+            flexy.getAttribute('video-id') || '');
+    }
+
+    function beginDeArrowWatchNavigation() {
+        if (retired) return;
+        deArrowWatchNavigating = true;
+        if (deArrowWatchNavigationTimer) clearTimeout(deArrowWatchNavigationTimer);
+        // A cancelled same-URL navigation may omit yt-navigate-finish. Fail open
+        // after a bounded delay; route/flexy/player identity checks still prevent
+        // an old title from being written onto a new video.
+        deArrowWatchNavigationTimer = setTimeout(() => {
+            deArrowWatchNavigationTimer = null;
+            if (retired) return;
+            deArrowWatchNavigating = false;
+            refreshDeArrowWatchTitle();
+        }, 3000);
+    }
+
+    function finishDeArrowWatchNavigation() {
+        deArrowWatchNavigating = false;
+        if (deArrowWatchNavigationTimer) {
+            clearTimeout(deArrowWatchNavigationTimer);
+            deArrowWatchNavigationTimer = null;
+        }
+    }
+
+    function refreshDeArrowWatchTitle() {
+        if (!retired && settings.enabled && settings.deArrowTitles) {
+            processDeArrowWatchPage();
+        }
+    }
+
     function processDeArrowWatchPage() {
-        if (!settings.deArrowTitles || location.pathname !== '/watch') return;
+        if (!settings.deArrowTitles || location.pathname !== '/watch' ||
+            deArrowWatchNavigating) return;
+
         const vid = watchVideoId();
         const h1 = document.querySelector(
             'ytd-watch-metadata h1 yt-formatted-string, h1.ytd-watch-metadata'
         );
-        if (vid && h1) {
-            prepareDeArrowTitleIdentity(deArrowTextTarget(h1), vid);
+        if (h1) observeFilterDetails(h1);
+
+        // During SPA navigation YouTube can update the heading, route, flexy and
+        // player in separate turns. Never write a title while those identities
+        // disagree, or a late pass for video A can overwrite video B's heading.
+        const flexyVideoId = watchFlexyVideoId();
+        if (vid && flexyVideoId && flexyVideoId !== vid) return;
+        const playerData = vid ? readWatchPlayerData() : null;
+        const playerMatches = !!(playerData && playerData.videoId === vid);
+        // Player data can lag the watch metadata or temporarily identify an ad.
+        // A matching flexy is enough to trust an already-hydrated DOM title, but
+        // never use a mismatched player's title as the native fallback.
+        if (!flexyVideoId && playerData && playerData.videoId &&
+            !playerMatches) return;
+
+        let titleReady = true;
+        const target = h1 && deArrowTextTarget(h1);
+        if (vid && target) {
+            titleReady = prepareDeArrowTitleIdentity(target, vid);
+            if (!titleReady && playerMatches && playerData.title) {
+                // Firefox can reuse the watch heading without hydrating its text
+                // again after our replacement. Player data is authoritative once
+                // its video ID agrees with the URL, so use it to break the stale
+                // A-title/awaiting-B deadlock and preserve B's real original.
+                target.textContent = playerData.title;
+                target.removeAttribute('data-ytb-de-await-title');
+                target.removeAttribute('data-ytb-de-stale-title');
+                titleReady = true;
+            }
         }
+
         const entry = vid && deCache.get(vid);
         if (vid && entry === undefined) {
             if (deInFlight.size < DE_CONCURRENCY) deLookup(vid);
             return;
         }
         if (!entry || entry === 'pending' || !entry.title) return;
-        if (h1) applyDeArrowTitle(h1, vid, entry.title, h1);
+        if (h1 && titleReady) applyDeArrowTitle(h1, vid, entry.title, h1);
     }
 
     // Community integrations still need to decorate appended cards. Keep a
@@ -4286,6 +4383,10 @@
             clearTimeout(tileEnhancementTimer);
             tileEnhancementTimer = null;
         }
+        if (deArrowWatchNavigationTimer) {
+            clearTimeout(deArrowWatchNavigationTimer);
+            deArrowWatchNavigationTimer = null;
+        }
         pendingTileEnhancements.clear();
         document.querySelectorAll('.ytb-menu-item').forEach(el => {
             if (el.dataset.ytbInstance === INSTANCE_ID) el.remove();
@@ -4388,12 +4489,21 @@
 
         // Blackout lifecycle: drop it optimistically when navigation starts so a
         // good video isn't held paused, then re-evaluate when the page settles.
-        document.addEventListener('yt-navigate-start', clearBlackout, true);
-        document.addEventListener('yt-navigate-finish', runAll, true);
+        document.addEventListener('yt-navigate-start', () => {
+            beginDeArrowWatchNavigation();
+            clearBlackout();
+        }, true);
+        document.addEventListener('yt-navigate-finish', () => {
+            finishDeArrowWatchNavigation();
+            runAll();
+        }, true);
+        document.addEventListener('yt-page-data-updated',
+            refreshDeArrowWatchTitle, true);
         let lastHref = location.href;
         lifecycleIntervals.push(setInterval(() => {
             if (retired || location.href === lastHref) return;
             lastHref = location.href;
+            finishDeArrowWatchNavigation();
             redirectShortsUrl();
             if (!retired) runAll();
         }, 500));
