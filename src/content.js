@@ -92,14 +92,17 @@
     /* ---- live state ------------------------------------------------ */
     let state = {
         hiddenVideoIds: [],
+        hiddenVideoMetadata: {},
         blockedChannels: [],
         blockedKeywords: [],
         ytCommentKeywords: [],
         ytChannelSpeeds: {},
         sbWhitelist: [],
+        inputBindings: {},
         settings: Object.assign({}, DEFAULT_SETTINGS)
     };
     let settings = Object.assign({}, DEFAULT_SETTINGS);
+    let sharedInputActionsEnabled = false;
     let hiddenSet = new Set();
     let keywordMatchers = [];   // compiled from state.blockedKeywords
     let commentMatchers = [];   // compiled from state.ytCommentKeywords
@@ -398,6 +401,10 @@
         d = d || {};
         return {
             hiddenVideoIds: Array.isArray(d.hiddenVideoIds) ? [...new Set(d.hiddenVideoIds)] : [],
+            hiddenVideoMetadata: (d.hiddenVideoMetadata && typeof d.hiddenVideoMetadata === 'object' &&
+                                  !Array.isArray(d.hiddenVideoMetadata))
+                ? Object.fromEntries(Object.entries(d.hiddenVideoMetadata).slice(0, 2000))
+                : {},
             blockedChannels: Array.isArray(d.blockedChannels)
                 ? d.blockedChannels.filter(c => c && (c.handle || c.channelId || c.name))
                 : [],
@@ -410,6 +417,8 @@
                               !Array.isArray(d.ytChannelSpeeds))
                 ? Object.assign({}, d.ytChannelSpeeds)
                 : {},
+            inputBindings: d.inputBindings && typeof d.inputBindings === 'object'
+                ? d.inputBindings : {},
             settings: Object.assign({}, DEFAULT_SETTINGS, d.settings || {})
         };
     }
@@ -453,6 +462,8 @@
             if (c.name) sbWhitelistIndex.names.add(c.name.toLowerCase().trim());
         }
         settings = Object.assign({}, DEFAULT_SETTINGS, state.settings);
+        sharedInputActionsEnabled = typeof YTBFeatures !== 'undefined' &&
+            YTBFeatures.normalizeInputBindings(state.inputBindings).youtube.enabled;
         compileKeywords();
 
         // Only tile-affecting state invalidates the card cache. Player/chat
@@ -523,6 +534,7 @@
             const stored = await api.storage.local.get(STORAGE_KEY);
             const full = stored[STORAGE_KEY] || {};
             full.hiddenVideoIds = state.hiddenVideoIds;
+            full.hiddenVideoMetadata = state.hiddenVideoMetadata;
             full.blockedChannels = state.blockedChannels;
             full.blockedKeywords = state.blockedKeywords;
             full.ytCommentKeywords = state.ytCommentKeywords;
@@ -2257,7 +2269,9 @@
     const deInFlight = new Set();
     const DE_CACHE_MAX = 800;
     const DE_CONCURRENCY = 6;
-    let deArrowAppliedTitles = !!document.querySelector('[data-ytb-de-title]');
+    let deArrowAppliedTitles = !!document.querySelector(
+        '[data-ytb-de-title], [data-ytb-de-watch-written]'
+    );
     let deArrowAppliedThumbs = !!document.querySelector('img[data-ytb-de-thumb]');
     let deArrowWatchNavigating = false;
     let deArrowWatchNavigationTimer = null;
@@ -2489,7 +2503,8 @@
     function restoreDeArrowTitles() {
         if (!deArrowAppliedTitles) return;
         document.querySelectorAll(
-            '[data-ytb-de-title], [data-ytb-de-await-title]'
+            '[data-ytb-de-title], [data-ytb-de-await-title], ' +
+            '[data-ytb-de-watch-written]'
         ).forEach(target => {
             const currentVideo = currentDeArrowVideoId(target);
             const originalVideo = target.dataset.ytbDeOriginalTitleVideo ||
@@ -2503,7 +2518,8 @@
                 'data-ytb-de-title', 'data-ytb-de-applied-title',
                 'data-ytb-de-original-title',
                 'data-ytb-de-original-title-video', 'data-ytb-de-await-title',
-                'data-ytb-de-stale-title'
+                'data-ytb-de-stale-title',
+                'data-ytb-de-watch-written', 'data-ytb-de-watch-written-title'
             ].forEach(name => target.removeAttribute(name));
         });
         document.querySelectorAll(
@@ -2709,6 +2725,33 @@
         }
     }
 
+    // After a heading write, YouTube's next hydration can append its own text
+    // or attributed-string node beside the foreign node we wrote instead of
+    // replacing it, leaving the previous and current titles rendered together.
+    // Remove exactly the node we wrote once YouTube has supplied any other
+    // content, along with the now-stale write markers on that holder.
+    function pruneDeArrowWatchDuplicate(holder) {
+        if (!holder || !holder.dataset || !holder.childNodes ||
+            holder.childNodes.length < 2) return false;
+        const written = holder.dataset.ytbDeWatchWrittenTitle ||
+            holder.dataset.ytbDeAppliedTitle || '';
+        if (!written) return false;
+        const children = [...holder.childNodes];
+        const ours = children.filter(node => node.nodeType === 3 &&
+            (node.textContent || '') === written);
+        const theirs = children.some(node => (node.textContent || '').trim() &&
+            (node.textContent || '') !== written);
+        if (!ours.length || !theirs) return false;
+        for (const node of ours) holder.removeChild(node);
+        [
+            'data-ytb-de-title', 'data-ytb-de-applied-title',
+            'data-ytb-de-original-title', 'data-ytb-de-original-title-video',
+            'data-ytb-de-await-title', 'data-ytb-de-stale-title',
+            'data-ytb-de-watch-written', 'data-ytb-de-watch-written-title'
+        ].forEach(name => holder.removeAttribute(name));
+        return true;
+    }
+
     function processDeArrowWatchPage() {
         if (!settings.deArrowTitles || location.pathname !== '/watch' ||
             deArrowWatchNavigating) return;
@@ -2735,7 +2778,29 @@
         let titleReady = true;
         const target = h1 && deArrowTextTarget(h1);
         if (vid && target) {
+            // The write may sit on the target itself or on its parent when
+            // YouTube re-rendered the heading with a new inner text holder.
+            pruneDeArrowWatchDuplicate(target);
+            pruneDeArrowWatchDuplicate(target.parentElement);
             titleReady = prepareDeArrowTitleIdentity(target, vid);
+            // A heading we wrote for another video can be reused with no
+            // replacement markers left behind — a native repair below leaves
+            // none, so a later end-screen navigation to a video without a
+            // DeArrow title would otherwise keep the old text forever. Track
+            // our own last write and treat an unchanged heading as stale.
+            if (titleReady) {
+                const written = target.dataset.ytbDeWatchWritten;
+                if (written && written !== vid) {
+                    if ((target.textContent || '') ===
+                        (target.dataset.ytbDeWatchWrittenTitle || '')) {
+                        titleReady = false;
+                    } else {
+                        // YouTube hydrated the heading since our last write.
+                        target.removeAttribute('data-ytb-de-watch-written');
+                        target.removeAttribute('data-ytb-de-watch-written-title');
+                    }
+                }
+            }
             if (!titleReady && playerMatches && playerData.title) {
                 // Firefox can reuse the watch heading without hydrating its text
                 // again after our replacement. Player data is authoritative once
@@ -2744,6 +2809,9 @@
                 target.textContent = playerData.title;
                 target.removeAttribute('data-ytb-de-await-title');
                 target.removeAttribute('data-ytb-de-stale-title');
+                target.dataset.ytbDeWatchWritten = vid;
+                target.dataset.ytbDeWatchWrittenTitle = playerData.title;
+                deArrowAppliedTitles = true;
                 titleReady = true;
             }
         }
@@ -2754,7 +2822,13 @@
             return;
         }
         if (!entry || entry === 'pending' || !entry.title) return;
-        if (h1 && titleReady) applyDeArrowTitle(h1, vid, entry.title, h1);
+        if (h1 && titleReady) {
+            applyDeArrowTitle(h1, vid, entry.title, h1);
+            if (target && target.dataset.ytbDeTitle === vid) {
+                target.dataset.ytbDeWatchWritten = vid;
+                target.dataset.ytbDeWatchWrittenTitle = target.textContent || '';
+            }
+        }
     }
 
     // Community integrations still need to decorate appended cards. Keep a
@@ -3012,9 +3086,26 @@
     /* ==================================================================
      * 5. Actions (hide video / block channel) + native don't-recommend
      * ================================================================== */
+    function rememberHiddenVideo(id, node, channel) {
+        if (!id) return;
+        const image = node && node.querySelector &&
+            node.querySelector('img[src], img[data-thumb], yt-image img');
+        state.hiddenVideoMetadata[id] = {
+            title: node ? getTitleFromNode(node) : '',
+            channel: channel && (channel.name || channel.handle || channel.channelId) || '',
+            thumbnail: image && (image.currentSrc || image.src) || '',
+            addedAt: Date.now()
+        };
+        const entries = Object.entries(state.hiddenVideoMetadata);
+        if (entries.length > 2000) {
+            entries.sort((a, b) => (b[1].addedAt || 0) - (a[1].addedAt || 0));
+            state.hiddenVideoMetadata = Object.fromEntries(entries.slice(0, 2000));
+        }
+    }
     function undoHideVideo(id) {
         const i = state.hiddenVideoIds.indexOf(id);
         if (i >= 0) state.hiddenVideoIds.splice(i, 1);
+        delete state.hiddenVideoMetadata[id];
         // Drop it from the per-channel "Hidden" tally too (hiding and watching
         // are tracked separately, so this never touches the watched database).
         if (WatchedDB) WatchedDB.removeHidden(id);
@@ -3034,9 +3125,10 @@
         const id = getVideoIdFromNode(tile);
         if (!id) { toast('Could not read a video ID here.'); return; }
         if (!hiddenSet.has(id)) state.hiddenVideoIds.push(id);
+        const chan = getChannelInfoFromNode(tile) || curChannelInfo;
+        rememberHiddenVideo(id, tile, chan);
         // Count it against this video's channel (separate from watched).
         if (WatchedDB) {
-            const chan = getChannelInfoFromNode(tile) || curChannelInfo;
             if (chan) WatchedDB.recordChannelHidden(chan, id);
         }
         removeTile(tile);
@@ -3315,6 +3407,7 @@
         closeNativeMenu();
         if (!id) { toast('Could not read a video for this menu.'); return; }
         if (!hiddenSet.has(id)) state.hiddenVideoIds.push(id);
+        rememberHiddenVideo(id, menuOwnerTile, chan);
         if (WatchedDB && chan) WatchedDB.recordChannelHidden(chan, id);
         if (menuOwnerTile) removeTile(menuOwnerTile);
         persist();
@@ -3724,6 +3817,39 @@
         updateBoostUI();
     }
 
+    // Playback profiles are applied by the shared player-controls module.
+    // A profile boost is session-scoped: it updates the live graph/UI without
+    // overwriting the user's base per-device boost setting.
+    function onPlaybackProfile(event) {
+        if (retired || !event.detail || event.detail.site !== 'youtube') return;
+        if (event.detail.speed == null) {
+            lastSpeedVideoId = null;
+            speedTries = 0;
+            setTimeout(applyDefaultSpeed, 0);
+        } else {
+            const speed = Number(event.detail.speed);
+            if (Number.isFinite(speed) && speed >= 0.1 && speed <= 8) {
+                const video = playerVideo();
+                if (video && !isLivePlayer()) setPlaybackRate(video, speed);
+                lastSpeedVideoId = watchVideoId();
+                speedTries = 0;
+            }
+        }
+        const profileBoost = event.detail.volumeBoost;
+        const boost = profileBoost == null
+            ? Number(state.settings.volumeBoost || 1) : Number(profileBoost);
+        if (!Number.isFinite(boost)) return;
+        settings.volumeBoost = Math.min(5, Math.max(1, boost));
+        const video = playerVideo();
+        if (video && settings.volumeBoost > 1) {
+            video.volume = 1;
+            ensureBoostGraph();
+        }
+        applyVolumeBoost();
+        ensureBoostSlider();
+        updateBoostUI();
+    }
+    document.addEventListener('ytb-apply-playback-profile', onPlaybackProfile);
     /* ==================================================================
      * 5c. Cinema mode: a ◐ button in the player's right controls darkens
      * everything around the player. Esc or clicking the dark area exits.
@@ -3885,7 +4011,7 @@
     }
 
     document.addEventListener('keydown', (e) => {
-        if (retired || !settings.enabled || !settings.ytSpeedHotkeys) return;
+        if (retired || sharedInputActionsEnabled || !settings.enabled || !settings.ytSpeedHotkeys) return;
         if (e.ctrlKey || e.altKey || e.metaKey) return;
         if (e.key !== '[' && e.key !== ']' && e.key !== '\\') return;
         const t = e.target;
@@ -4153,8 +4279,9 @@
         e.preventDefault();
         e.stopPropagation();
         if (!hiddenSet.has(id)) state.hiddenVideoIds.push(id);
+        const chan = tile ? getChannelInfoFromNode(tile) : curChannelInfo;
+        rememberHiddenVideo(id, tile || still, chan);
         if (WatchedDB) {   // count against the channel (separate from watched)
-            const chan = tile ? getChannelInfoFromNode(tile) : curChannelInfo;
             if (chan) WatchedDB.recordChannelHidden(chan, id);
         }
         if (still) still.style.display = 'none';
@@ -4256,12 +4383,14 @@
         const i = state.hiddenVideoIds.indexOf(id);
         if (i < 0) return false;
         state.hiddenVideoIds.splice(i, 1);
+        delete state.hiddenVideoMetadata[id];
         persist();
         return true;
     };
     window.ytsbResetHidden = () => {
         const n = state.hiddenVideoIds.length;
         state.hiddenVideoIds = [];
+        state.hiddenVideoMetadata = {};
         persist();
         return n;
     };
@@ -4388,6 +4517,7 @@
             deArrowWatchNavigationTimer = null;
         }
         pendingTileEnhancements.clear();
+        document.removeEventListener('ytb-apply-playback-profile', onPlaybackProfile);
         document.querySelectorAll('.ytb-menu-item').forEach(el => {
             if (el.dataset.ytbInstance === INSTANCE_ID) el.remove();
         });

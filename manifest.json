@@ -39,22 +39,22 @@
   "content_scripts": [
     {
       "matches": ["*://www.youtube.com/*", "*://m.youtube.com/*"],
-      "js": ["src/watched-db.js", "src/content.js"],
-      "css": ["src/content.css"],
+      "js": ["src/feature-core.js", "src/watched-db.js", "src/player-controls.js", "src/content.js", "src/youtube-workspace.js"],
+      "css": ["src/content.css", "src/player-controls.css", "src/youtube-workspace.css"],
       "run_at": "document_start",
       "all_frames": false
     },
     {
       "matches": ["*://www.twitch.tv/*", "*://m.twitch.tv/*", "*://clips.twitch.tv/*"],
-      "js": ["src/twitch.js"],
-      "css": ["src/twitch.css"],
+      "js": ["src/feature-core.js", "src/player-controls.js", "src/twitch-experience.js", "src/twitch.js"],
+      "css": ["src/twitch.css", "src/player-controls.css", "src/twitch-experience.css"],
       "run_at": "document_start",
       "all_frames": false
     }
   ],
 
   "background": {
-    "scripts": ["src/common.js", "src/background.js"]
+    "scripts": ["src/feature-core.js", "src/common.js", "src/background.js"]
   },
 
   "browser_action": {

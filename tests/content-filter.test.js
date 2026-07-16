@@ -704,6 +704,149 @@ test('watch-page DeArrow repairs a stale SPA title from current player data', ()
     assert.equal(title.dataset.ytbDeAwaitTitle, undefined);
 });
 
+test('watch-page DeArrow releases a reused heading across later navigations', () => {
+    const title = new FakeDecoratedText('Native A');
+    const playerData = { video_id: 'video-a', title: 'Native A' };
+    const flexyData = { videoId: 'video-a' };
+    const api = loadContentHarness(
+        new Set(), { watchTitle: title, playerData, flexyData }
+    );
+
+    api.configure({ settings: { enabled: true, deArrowTitles: true } });
+    api.setPath('/watch?v=video-a');
+    api.setDeArrowCache('video-a', { title: 'Community A' });
+    api.processDeArrowWatchPage();
+    assert.equal(title.textContent, 'Community A');
+
+    // End-screen click to video B (no community title). Firefox reuses the
+    // heading unhydrated; the repair path recovers B's native title.
+    api.setPath('/watch?v=video-b');
+    flexyData.videoId = 'video-b';
+    playerData.video_id = 'video-b';
+    playerData.title = 'Native B';
+    api.setDeArrowCache('video-b', {});
+    api.processDeArrowWatchPage();
+    assert.equal(title.textContent, 'Native B');
+
+    // B finishes; an end-screen click to video C (also without a community
+    // title) reuses the unhydrated heading again. No replacement markers are
+    // left after the repair, so staleness must be detected from our own last
+    // write or B's title persists under video C forever.
+    api.setPath('/watch?v=video-c');
+    flexyData.videoId = 'video-c';
+    playerData.video_id = 'video-c';
+    playerData.title = 'Native C';
+    api.setDeArrowCache('video-c', {});
+    api.processDeArrowWatchPage();
+    assert.equal(title.textContent, 'Native C',
+        'a repaired heading reused by a later navigation must be released');
+
+    // A later hop with a community title must release the repaired text first
+    // so the recorded original belongs to the new video.
+    api.setPath('/watch?v=video-d');
+    flexyData.videoId = 'video-d';
+    playerData.video_id = 'video-d';
+    playerData.title = 'Native D';
+    api.setDeArrowCache('video-d', { title: 'Community D' });
+    api.processDeArrowWatchPage();
+    assert.equal(title.textContent, 'Community D');
+    assert.equal(title.dataset.ytbDeOriginalTitle, 'Native D');
+    assert.equal(title.dataset.ytbDeOriginalTitleVideo, 'video-d');
+});
+
+class FakeHeadingText {
+    constructor(text) {
+        this.nodeType = 3;
+        this.text = text;
+    }
+    get textContent() { return this.text; }
+}
+
+class FakeHeading extends FakeDecoratedText {
+    constructor(text) {
+        super('');
+        this.childNodes = [new FakeHeadingText(text)];
+    }
+    get textContent() {
+        return this.childNodes.map(node => node.textContent).join('');
+    }
+    set textContent(value) {
+        this.childNodes = [new FakeHeadingText(String(value))];
+    }
+    removeChild(node) {
+        this.childNodes = this.childNodes.filter(item => item !== node);
+    }
+}
+
+test('watch-page DeArrow removes its stale text node when YouTube appends the new title', () => {
+    const title = new FakeHeading('Native A');
+    const playerData = { video_id: 'video-a', title: 'Native A' };
+    const flexyData = { videoId: 'video-a' };
+    const api = loadContentHarness(
+        new Set(), { watchTitle: title, playerData, flexyData }
+    );
+
+    api.configure({ settings: { enabled: true, deArrowTitles: true } });
+    api.setPath('/watch?v=video-a');
+    api.setDeArrowCache('video-a', { title: 'Community A' });
+    api.processDeArrowWatchPage();
+    assert.equal(title.textContent, 'Community A');
+
+    // YouTube hydrates the next video by appending its own text node beside
+    // the foreign node the extension wrote, so both titles render at once.
+    title.childNodes.push(new FakeHeadingText('Native B'));
+    api.setPath('/watch?v=video-b');
+    flexyData.videoId = 'video-b';
+    playerData.video_id = 'video-b';
+    playerData.title = 'Native B';
+    api.setDeArrowCache('video-b', {});
+    api.processDeArrowWatchPage();
+    assert.equal(title.textContent, 'Native B',
+        'the stale community text node must be pruned, keeping YouTube\'s node');
+    assert.equal(title.dataset.ytbDeTitle, undefined);
+    assert.equal(title.dataset.ytbDeWatchWritten, undefined);
+
+    // A later video with a community title still applies over the pruned node.
+    api.setDeArrowCache('video-b', { title: 'Community B' });
+    api.refreshDeArrowWatchTitle();
+    assert.equal(title.textContent, 'Community B');
+    assert.equal(title.dataset.ytbDeOriginalTitle, 'Native B');
+});
+
+test('watch-page DeArrow trusts native hydration over its own last repair', () => {
+    const title = new FakeDecoratedText('Native A');
+    const playerData = { video_id: 'video-a', title: 'Native A' };
+    const flexyData = { videoId: 'video-a' };
+    const api = loadContentHarness(
+        new Set(), { watchTitle: title, playerData, flexyData }
+    );
+
+    api.configure({ settings: { enabled: true, deArrowTitles: true } });
+    api.setPath('/watch?v=video-a');
+    api.setDeArrowCache('video-a', { title: 'Community A' });
+    api.processDeArrowWatchPage();
+
+    api.setPath('/watch?v=video-b');
+    flexyData.videoId = 'video-b';
+    playerData.video_id = 'video-b';
+    playerData.title = 'Native B';
+    api.setDeArrowCache('video-b', {});
+    api.processDeArrowWatchPage();
+    assert.equal(title.textContent, 'Native B');
+
+    // YouTube hydrates the heading itself on the next navigation before our
+    // pass runs. The hydrated text wins even when player data differs.
+    api.setPath('/watch?v=video-c');
+    flexyData.videoId = 'video-c';
+    playerData.video_id = 'video-c';
+    playerData.title = 'Native C (player)';
+    title.textContent = 'Native C';
+    api.setDeArrowCache('video-c', {});
+    api.processDeArrowWatchPage();
+    assert.equal(title.textContent, 'Native C',
+        'a natively hydrated heading must never be overwritten by the repair');
+});
+
 test('watch-page DeArrow does not overwrite early native hydration during navigation', () => {
     const title = new FakeDecoratedText('Native A');
     const playerData = { video_id: 'video-a', title: 'Native A' };

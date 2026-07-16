@@ -1,8 +1,9 @@
 # YouTube/Twitch Enhancer (Firefox add-on)
 
 Take back your YouTube feed. Block whole channels, hide videos by title keyword,
-remove Shorts, hide what you've already watched, and strip the clutter — all
-locally in your browser, with nothing collected or sent anywhere.
+remove Shorts, hide what you've already watched, and strip the clutter. Core
+filtering and preferences stay in your browser; optional public integrations and
+Firefox Sync are disclosed below.
 
 From v4.0 the same add-on also cleans up **Twitch**: block channels and whole
 categories, filter stream titles, auto-claim channel points, hide the
@@ -87,6 +88,36 @@ manager page.
   Continuation batches and later title/progress hydration are classified in the
   same mutation-observer turn, minimizing visible hide-after-render windows.
 
+## Shared playback, YouTube workspace, and safer settings
+
+The current development version adds a local shared feature layer without a
+custom backend or new host permissions:
+
+- **Configurable player actions.** Map keyboard chords, auxiliary mouse buttons,
+  and player-wheel gestures to play/pause, seeking, frame stepping, speed,
+  volume, mute, screenshots, loop, cinema, captions, chapters, live edge, and
+  Twitch chat overlay actions. The existing **[**, **]**, and **\** speed keys
+  remain the defaults. Bindings are ignored while typing and conflicts or
+  browser-reserved shortcuts are rejected in settings.
+- **Playback profiles.** Named, duplicable profiles can set speed, volume boost,
+  preferred quality, captions, compressor state, and site scope. Profiles can
+  be global or assigned to a YouTube/Twitch channel; unavailable quality levels
+  fall back to rendered/native choices. The active player chip explains whether
+  the profile came from the global choice or a channel rule.
+- **Transcript and chapter workspace.** YouTube watch pages gain a dock that
+  reads the transcript already rendered by YouTube, searches cues, follows the
+  active timestamp, seeks on selection, copies/exports timestamped text, and
+  navigates chapters. It makes no transcript API request.
+- **Local subscription collections.** Create, colour, order, duplicate, import,
+  and export collections of channel identities already present in YouTube's
+  rendered DOM. The Subscriptions feed can be filtered to a collection or to
+  uncollected channels without changing native subscriptions.
+- **Progressive settings and safety.** Both managers now have site navigation,
+  search, a sticky contents bar, persisted collapsible sections, Basic/Advanced
+  views, light/dark/system themes, named settings presets, redacted diagnostics,
+  recent destructive actions with bounded undo, import preview with selective
+  merge/replace, and an automatic backup before reset. Lists over 500 rows are
+  sorted and paged instead of rendering without a bound.
 ## Community data integrations (v4.3, all off by default)
 
 Three opt-in YouTube features backed by free community-run services, replacing
@@ -139,6 +170,21 @@ All Twitch features have their own toggles: the popup's **Twitch** tab has the
 quick switches, and **⚙ Twitch advanced…** opens a full Twitch-only manager
 page (separate from the YouTube options).
 
+- **Bounded player recovery and live controls.** Recoverable rendered player/media
+  failures retry with exponential backoff, a visible attempt status, and a
+  cancel button; retries stop at the configured limit. Repeated failures can
+  step down through quality options that Twitch has already rendered. Live
+  streams show a best-effort buffer delay and a live-edge action; VOD/clip seek
+  steps are configurable from 1–60 seconds.
+- **Local sidebar favourites, groups, and search.** Followed-channel entries can
+  be pinned, searched, grouped, reordered, imported, and exported using channel
+  logins already present in Twitch links. Native entries, live/offline metadata,
+  and navigation remain owned by Twitch; recycled or duplicate rows are cleaned
+  without deleting Twitch nodes.
+- **Theater/fullscreen chat overlay.** Move the existing chat DOM into a
+  reversible overlay with left/right placement, width, opacity, font scale,
+  auto-hide, and click-through options. The message input stays unavailable in
+  passive mode and is restored with the original chat layout when disabled.
 - **Block Twitch channels.** Right-click any stream card → **Block this Twitch
   channel**, or add channels by name/URL in the popup or Twitch manager.
   Blocked channels vanish from the front page, directory grids, search, and
@@ -258,7 +304,12 @@ sign via [addons.mozilla.org/developers](https://addons.mozilla.org/developers/)
 The regression suite has no npm dependencies and runs on Node.js:
 
 ```sh
-node --test --test-isolation=none tests/content-filter.test.js tests/watched-db.test.js
+# PowerShell
+$tests = Get-ChildItem tests -Filter *.test.js | ForEach-Object { $_.FullName }
+node --test --test-isolation=none $tests
+
+# bash/zsh
+node --test --test-isolation=none tests/*.test.js
 ```
 
 It exercises a synthetic 600-card channel, continuation appends, renderer
@@ -270,6 +321,14 @@ reads/writes with autonomous recovery, simultaneous-tab convergence, distributed
 clears and reset re-entry, stale loaders, late stale-generation writes, metadata
 repair, live operation migration, and Undo against in-flight snapshots.
 
+The added suites also cover chord parsing/conflicts/editable targets, profile
+normalization and rule precedence, transcript/chapter parsing, collection
+JSON/CSV round trips and filtering, Twitch recovery/quality/live-delay helpers,
+600-card dirty-subtree processing and recycled sidebar identities, overlay and
+diagnostics normalization, settings import/undo helpers, and popup ARIA/keyboard
+relationships. JavaScript syntax, `manifest.json`, referenced assets, and
+`git diff --check` are part of release verification in
+[`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md).
 ## Usage
 
 ### Block a channel
@@ -312,13 +371,13 @@ Options page → **Blocked title keywords** → add words, phrases, or
 
 ## Privacy
 
-Everything runs locally. The add-on collects **no data**, phones home to
-**nothing**, and requires no account. Your block list lives in
-`browser.storage.local` (and, only if you enable it, `browser.storage.sync`
-inside your own Firefox account). The manifest declares
-`data_collection_permissions: none`.
+Core filtering, lists, profiles, collections, bindings, diagnostics, and undo
+history use extension storage and require no enhancer account. The project has
+**no custom hosted backend**. Supported block lists use
+`browser.storage.sync` only when Firefox Sync is explicitly enabled. The
+manifest declares `data_collection_permissions: none`.
 
-Scoped exceptions, each behind its own toggle:
+Network-backed features are labelled in the UI:
 
 - The **third-party emotes** toggle (Twitch, on by default, easily turned
   off) fetches emote lists from the public BetterTTV, FrankerFaceZ and 7TV
@@ -338,9 +397,45 @@ Scoped exceptions, each behind its own toggle:
 - **Sidebar hover previews** (Twitch, v4.2) load one thumbnail per hover
   from Twitch's own CDN.
 
-Nothing else is sent, and with these toggles off no feature makes any
-network request.
+The new transcript, collections, player recovery, sidebar groups, chat overlay,
+profiles, input actions, diagnostics, presets, import/export, and undo features
+make no external request. Normal media, navigation, chat, thumbnails, and other
+YouTube/Twitch page traffic remains traffic to those sites. With the labelled
+public integrations and Firefox Sync disabled, the enhancer adds no third-party
+request.
 
+## Local data, permissions, and DOM resilience
+
+New data stays in the existing local `data` record:
+
+- `inputBindings`, `playbackProfiles`, `activePlaybackProfiles`, and
+  `channelPlaybackProfiles` hold shared controls and profile assignments.
+- `ytCollections` and `twitchSidebar` hold bounded local organisation data.
+- `settingsPresets`, `recentActions`, and `hiddenVideoMetadata` hold bounded
+  settings snapshots, reversible list changes, and metadata for newly hidden
+  videos. Old ID-only hidden-video records remain valid.
+- `twitchPlayer`, `twitchChatOverlay`, and `twitchDiagnostics` contain bounded
+  preferences and redacted recovery state. Diagnostics never contain URLs,
+  channel/video identities, titles, transcript/chat text, or tokens.
+
+Optional Firefox Sync remains quota-aware: collections/sidebar membership is
+capped before it joins the existing supported list payload. Watched history,
+profiles, settings, diagnostics, and recent actions are not synced by this
+feature. JSON backups cover the new models; collections also support CSV.
+
+No permission was added for these features. `storage` and `unlimitedStorage`
+hold local configuration/history, `contextMenus` provides the existing page
+menus, YouTube/Twitch host access runs the content scripts, and the BTTV/FFZ/7TV
+hosts support the labelled third-party emote integration.
+
+Twitch selectors prefer stable `data-a-target`, `data-test-selector`, roles,
+media state, and channel/category URLs. A few old Twitch surfaces still expose
+only text/class fallbacks: the English “Rerun” badge, legacy inventory “Claim”
+links, older claim/moment/clip ARIA labels, and deleted-message notices. Each
+fallback is scoped to the relevant card/callout/player/chat container. If Twitch
+localises or removes it, that optional enhancement fails closed (the item stays
+visible, is not clicked, or is not restored); native Twitch behaviour continues.
+Player recovery itself does not classify errors by translated text.
 ## How it works
 
 - **`src/content.js`** runs at `document_start`. A static startup gate keeps
@@ -370,16 +465,18 @@ network request.
   overwrites and stale counts are detected and repaired. Timestamped
   remove/restore operations make Undo deterministic across tabs, and the prior
   monolithic operation record migrates automatically.
-- **`src/twitch.js`** runs at `document_start` on `www.twitch.tv` (and
-  `clips.twitch.tv`, where it only records the clip you just created). Same
-  observer/interval pattern as the YouTube script. Stream cards are hidden at
-  their grid-cell level so towers reflow cleanly; quality is pinned through
-  Twitch's own `localStorage` preference keys; "share clip to chat" inserts
-  text through the Slate editor on the chat input's React fiber because
-  synthetic paste/input events are ignored by Slate in Firefox. Auto-claim
-  and carousel-pausing keep running in background tabs, while the heavier
-  card scans wait for the tab to be visible.
-- **`src/background.js`** registers the right-click menu, opens the onboarding
+- **`src/twitch.js`** runs at `document_start` and keeps card filtering on an
+  identity-cached dirty-subtree path. Initial 600-card loads, continuation
+  inserts, hydration, and recycled nodes are classified without a recurring
+  full-page article scan; a bounded shell-recovery queue handles missed
+  hydration. Claims/chat/player utilities keep their existing scoped passes.
+- **`src/twitch-experience.js`** owns bounded recovery, live delay/edge, the
+  local sidebar projection/manager, and reversible chat overlay. It reads only
+  rendered Twitch state/media ranges and stores bounded local preferences and
+  redacted recovery state.
+- **`src/player-controls.js`** supplies the common input-action and playback
+  profile runtime on both sites. **`src/youtube-workspace.js`** supplies the
+  rendered-transcript/chapter dock and local subscription collections.- **`src/background.js`** registers the right-click menu, opens the onboarding
   page on first install, and mirrors block lists to Firefox Sync (chunked to
   fit `storage.sync` quotas) when enabled.
 - **`src/popup.*`** and **`src/options.*`** share storage helpers in
@@ -400,6 +497,11 @@ src/
   twitch.js      twitch.css     — the on-page engine (Twitch)
   background.js                 — context menus, onboarding, Firefox Sync
   common.js                     — shared storage/import/export helpers
+  feature-core.js               — bounded shared models and pure helpers
+  player-controls.js/.css       — common actions and playback profiles
+  youtube-workspace.js/.css     — transcript/chapters and collections
+  twitch-experience.js/.css     — recovery, sidebar tools, chat overlay
+  settings-enhancements.js/.css — navigation, editors, safety and diagnostics
   popup.html     popup.js       — toolbar popup (YouTube + Twitch panels)
   options.html   options.js     — full manager (YouTube)
   twitch-options.html/.js       — full manager (Twitch)
@@ -408,7 +510,39 @@ src/
 tests/
   content-filter.test.js        — 600-card/incremental DOM regression harness
   watched-db.test.js            — storage, retry, and cross-tab regression tests
+  feature-core.test.js           — controls/profiles/collections/schema helpers
+  player-controls.test.js        — configurable action runtime
+  youtube-workspace.test.js      — transcript/chapter/collection helpers
+  twitch-experience.test.js      — recovery/sidebar/overlay/incremental helpers
+  settings-enhancements.test.js  — search/import/rules/undo/privacy helpers
+  ui-accessibility.test.js       — popup/settings/onboarding accessibility
 ```
+
+## Troubleshooting
+
+- **A feature stopped applying.** Check the master switch for that site in the
+  popup, then the per-site feature toggles at the top of the settings page.
+  In Basic view some sections are hidden; switch to Advanced or use the
+  settings search, which always reveals matches.
+- **Custom shortcuts do not fire.** Bindings are ignored while typing in any
+  field, and the editor rejects conflicting or browser-reserved chords, so a
+  binding that never saved never fires. Confirm "Enable custom actions" is on
+  for that site. The legacy `[`, `]`, and `\` speed keys only take over while
+  custom actions are disabled.
+- **Twitch keeps retrying playback.** The retry counter button on the player
+  cancels the current recovery run; attempts are always bounded. Turn off
+  "Bounded player recovery" in Twitch settings to disable the feature.
+- **The chat overlay vanished after navigating.** Twitch rebuilt the page, so
+  the extension returned chat to its native place rather than risk breaking
+  it. Toggle the overlay again from the player controls.
+- **Controls look duplicated or orphaned after an update.** The newest
+  extension instance retires the old one automatically; reload the tab if a
+  leftover control persists.
+- **Something looks wrong and you want to report it.** Copy the redacted
+  diagnostics from the settings page (no URLs, titles, identities, or message
+  text) and include them in the issue. Destructive list changes can be undone
+  from the same section for seven days, and every reset offers a backup
+  download first.
 
 ## Support
 

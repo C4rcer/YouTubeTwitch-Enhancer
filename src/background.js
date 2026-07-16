@@ -349,12 +349,37 @@
         'twitchChatBlockKeywords', 'twitchChatBlockUsers', 'ytCommentKeywords'
     ];
 
+    // Collection data is quota-aware: retain collection/group structure and a
+    // bounded number of channel identities rather than letting one large local
+    // library crowd every other synced list out of Firefox Sync.
+    function collectionsForSync(collections) {
+        let remaining = 300;
+        return collections.map(collection => {
+            const channels = collection.channels.slice(0, remaining);
+            remaining -= channels.length;
+            return Object.assign({}, collection, { channels });
+        });
+    }
+
+    function sidebarForSync(sidebar) {
+        let remaining = 300;
+        const favorites = sidebar.favorites.slice(0, Math.min(150, remaining));
+        remaining -= favorites.length;
+        const groups = sidebar.groups.map(group => {
+            const channels = group.channels.slice(0, remaining);
+            remaining -= channels.length;
+            return Object.assign({}, group, { channels });
+        });
+        return { favorites, groups };
+    }
     function listsOf(data) {
         const d = YTB.normalize(data);
         const out = {
             blockedChannels: d.blockedChannels,
             twitchBlockedChannels: d.twitchBlockedChannels,
-            twitchBlockedCategories: d.twitchBlockedCategories
+            twitchBlockedCategories: d.twitchBlockedCategories,
+            ytCollections: collectionsForSync(d.ytCollections),
+            twitchSidebar: sidebarForSync(d.twitchSidebar)
         };
         for (const f of SIMPLE_LIST_FIELDS) out[f] = d[f];
         return JSON.stringify(out);
@@ -434,6 +459,12 @@
                 inc[f].forEach(k => set.add(k));
                 merged[f] = [...set];
             }
+            const features = YTB.mergeImport(merged, {
+                ytCollections: inc.ytCollections,
+                twitchSidebar: inc.twitchSidebar
+            }).data;
+            merged.ytCollections = features.ytCollections;
+            merged.twitchSidebar = features.twitchSidebar;
         }
         const str = listsOf(merged);
         if (str !== listsOf(local)) {
@@ -455,6 +486,8 @@
         next.blockedChannels = inc.blockedChannels;
         next.twitchBlockedChannels = inc.twitchBlockedChannels;
         next.twitchBlockedCategories = inc.twitchBlockedCategories;
+        next.ytCollections = inc.ytCollections;
+        next.twitchSidebar = inc.twitchSidebar;
         for (const f of SIMPLE_LIST_FIELDS) next[f] = inc[f];
         lastAppliedStr = listsOf(next);
         await api.storage.local.set({ data: next });
