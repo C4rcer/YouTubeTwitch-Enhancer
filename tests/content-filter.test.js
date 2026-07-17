@@ -55,6 +55,7 @@ class FakeTile {
         this.isPlaylist = !!options.isPlaylist;
         this.isMembers = !!options.isMembers;
         this.isPaid = !!options.isPaid;
+        this.paidText = options.paidText || 'Pay to watch';
         this.setVideo(id);
     }
 
@@ -103,9 +104,10 @@ class FakeTile {
             return [this.videoAnchor, this.channelAnchor].filter(Boolean);
         }
         if (selector === 'badge-shape.ytBadgeShapeCommerce') {
+            const paidText = this.paidText;
             return this.isPaid ? [{
-                textContent: 'Pay to watch',
-                getAttribute: name => name === 'aria-label' ? 'Pay to watch' : null
+                textContent: paidText,
+                getAttribute: name => name === 'aria-label' ? paidText : null
             }] : [];
         }
         if (selector.includes('ytd-badge-supported-renderer')) {
@@ -217,6 +219,7 @@ function loadContentHarness(watched, options = {}) {
     const hook = `
     self.__YTB_FILTER_TEST__ = {
         filterMutatedTiles,
+        isPaidBadgeText,
         processTiles(tiles, force = true) { processTiles(new Set(tiles), force, false); },
         processLegacyMutationFilters,
         prepareDeArrowTitleIdentity,
@@ -878,4 +881,68 @@ test('watch-page DeArrow does not overwrite early native hydration during naviga
     assert.equal(title.textContent, 'Community B');
     assert.equal(title.dataset.ytbDeOriginalTitle, 'Native B');
     assert.equal(title.dataset.ytbDeOriginalTitleVideo, 'video-b');
+});
+
+test('paid and free badge labels are recognised across YouTube UI languages', () => {
+    const api = loadContentHarness(new Set());
+
+    const paidBadges = [
+        'Pay to watch', 'Buy or rent',      // en
+        // de wording verified live on the storefront, 2026-07
+        'Kaufen oder leihen', 'Kaufen oder ausleihen', 'Kostenpflichtig',
+        'Comprar o alquilar', 'De pago',    // es
+        'Acheter ou louer', 'Payant',       // fr
+        'Noleggia o acquista',              // it
+        'A pagamento',                      // it
+        'Alugar ou comprar',                // pt
+        'Huren of kopen', 'Betaald',        // nl
+        'Kup lub wypożycz', 'Płatne',       // pl
+        'Купить или взять напрокат',        // ru
+        'Платно',                           // ru
+        'Satın al veya kirala', 'Ücretli',  // tr
+        '購入またはレンタル', 'レンタル',      // ja
+        '有料',                              // ja
+        '구매 또는 대여', '유료',              // ko
+        '购买或租借', '購買或租借', '付費',     // zh
+        'شراء أو استئجار', 'مدفوع'          // ar
+    ];
+    const freeBadges = [
+        'Free with ads',                    // en
+        'Kostenlos mit Werbung',            // de (verified live 2026-07)
+        'Gratis con anuncios',              // es
+        'Gratuit avec des annonces',        // fr
+        'Gratis con annunci',               // it
+        'Grátis com anúncios',              // pt
+        'Za darmo z reklamami',             // pl
+        'Bezpłatne z reklamami',            // pl (contains the "płatn" stem)
+        'Бесплатно с рекламой',             // ru (contains the "платн" stem)
+        'Reklamlarla ücretsiz',             // tr
+        '広告付きで無料',                     // ja
+        '광고 포함 무료',                     // ko
+        '含广告免费', '免費（含廣告）'          // zh
+    ];
+    for (const label of paidBadges) {
+        assert.equal(api.isPaidBadgeText(label), true, 'paid: ' + label);
+    }
+    for (const label of freeBadges) {
+        assert.equal(api.isPaidBadgeText(label), false, 'free: ' + label);
+    }
+});
+
+test('a localized paid badge hides the tile and a localized free badge does not', () => {
+    const api = loadContentHarness(new Set());
+    api.configure({
+        settings: { enabled: true, hidePaidVideos: true, reduceFlashing: true }
+    });
+
+    const cards = [
+        new FakeTile('paidjp000001', { isPaid: true, paidText: '購入またはレンタル' }),
+        new FakeTile('freejp000001', { isPaid: true, paidText: '広告付きで無料' }),
+        new FakeTile('plain0000001')
+    ];
+    api.filterMutatedTiles([childListRecord(new FakeRoot(cards))]);
+
+    assert.equal(cards[0].dataset.ytbFilterReason, 'paid');
+    assert.equal(cards[1].dataset.ytbFilterReason, undefined);
+    assert.equal(cards[2].dataset.ytbFilterReason, undefined);
 });

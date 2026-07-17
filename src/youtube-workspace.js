@@ -1060,10 +1060,19 @@
             }
         }
 
+        // "Show transcript" carries a localized label. Match the word stem in
+        // YouTube's common UI languages ("transcri" covers en/fr/es/pt/nl,
+        // "transkrip" covers de/pl); the section renderer selector below is the
+        // language-independent fallback for everything else.
+        const TRANSCRIPT_LABEL_RE = /transcri|transkrip|trascrizion|расшифровк|文字起こし|스크립트/i;
+
         function renderedTranscriptButton() {
             const selectors = [
-                'button[aria-label*="transcript" i]',
-                '[role="button"][aria-label*="transcript" i]',
+                'button[aria-label*="transcri" i]',
+                'button[aria-label*="transkrip" i]',
+                'button[aria-label*="文字起こし"]',
+                '[role="button"][aria-label*="transcri" i]',
+                '[role="button"][aria-label*="transkrip" i]',
                 'ytd-video-description-transcript-section-renderer button'
             ];
             for (const selector of selectors) {
@@ -1073,7 +1082,7 @@
             const candidates = document.querySelectorAll(
                 '#description button, #description tp-yt-paper-button, ytd-watch-metadata button, ytd-watch-metadata [role="button"]'
             );
-            return [...candidates].find(candidate => /transcript/i.test(cleanText(
+            return [...candidates].find(candidate => TRANSCRIPT_LABEL_RE.test(cleanText(
                 candidate.getAttribute('aria-label') || candidate.textContent
             ))) || null;
         }

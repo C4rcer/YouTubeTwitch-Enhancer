@@ -88,10 +88,10 @@ manager page.
   Continuation batches and later title/progress hydration are classified in the
   same mutation-observer turn, minimizing visible hide-after-render windows.
 
-## Shared playback, YouTube workspace, and safer settings
+## Shared playback, YouTube workspace, and safer settings (v4.8)
 
-The current development version adds a local shared feature layer without a
-custom backend or new host permissions:
+Version 4.8 adds a local shared feature layer without a custom backend or new
+host permissions:
 
 - **Configurable player actions.** Map keyboard chords, auxiliary mouse buttons,
   and player-wheel gestures to play/pause, seeking, frame stepping, speed,

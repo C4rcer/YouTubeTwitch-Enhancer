@@ -309,6 +309,13 @@
     // "Free with ads" — that content is free. Matching the paid labels (rather
     // than the class minus free) means an unlisted-language free badge is never
     // hidden by mistake; a paid tile in an unlisted language is only missed.
+    // Language coverage mirrors MEMBERS_TEXTS; the free list is checked first,
+    // so its entries can be short stems ("gratis", "無料") without risk.
+    // Besides buy/rent wording, YouTube also uses a bare "paid" badge (seen
+    // live 2026-07 on the de storefront as "Kostenpflichtig" next to "Kaufen
+    // oder ausleihen"), so each language lists its generic "paid" term too.
+    // The "płatn"/"платн" stems are substrings of the free words "bezpłatne"/
+    // "бесплатно"; the free-list-first check is what keeps those visible.
     const PAID_BADGE_SEL = 'badge-shape.ytBadgeShapeCommerce';
     const FILTER_DETAIL_PROGRESS_HOSTS = [
         'ytd-thumbnail-overlay-resume-playback-renderer',
@@ -323,14 +330,34 @@
     ].join(',');
     const PAID_TEXTS = [
         'pay to watch', 'buy or rent', 'rent or buy', 'buy', 'rent',   // en
-        'kaufen oder leihen', 'kaufen', 'leihen',                      // de
-        'comprar o alquilar', 'comprar', 'alquilar',                   // es
-        'acheter ou louer', 'acheter', 'louer',                        // fr
-        'noleggia o acquista', 'noleggia', 'acquista',                 // it
-        'alugar ou comprar', 'alugar',                                 // pt (comprar = es/pt)
-        'huren of kopen', 'huren', 'kopen'                             // nl
+        'kaufen oder leihen', 'kaufen', 'leihen', 'kostenpflichtig',   // de (leihen ⊂ ausleihen)
+        'comprar o alquilar', 'comprar', 'alquilar', 'de pago',        // es
+        'acheter ou louer', 'acheter', 'louer', 'payant',              // fr
+        'noleggia o acquista', 'noleggia', 'acquista', 'a pagamento',  // it
+        'alugar ou comprar', 'alugar', 'pago',                         // pt (comprar = es/pt)
+        'huren of kopen', 'huren', 'kopen', 'betaald',                 // nl
+        'kup lub wypożycz', 'wypożycz', 'kup', 'płatn',                // pl
+        'купить или взять напрокат', 'напрокат', 'купить', 'платн',    // ru
+        'satın al veya kirala', 'kirala', 'satın al', 'ücretli',       // tr
+        '購入またはレンタル', 'レンタル', '購入', '有料',                  // ja
+        '구매 또는 대여', '대여', '구매', '유료',                          // ko
+        '购买或租借', '购买', '購買或租借', '購買', '租借', '付費', '付费', // zh
+        'شراء أو استئجار', 'استئجار', 'شراء', 'مدفوع'                  // ar
     ];
-    const PAID_FREE_TEXTS = ['free with ads', 'free to watch', 'watch for free'];
+    const PAID_FREE_TEXTS = [
+        'free with ads', 'free to watch', 'watch for free',            // en
+        'kostenlos',                                                   // de
+        'gratis',                                                      // de/es/it/nl
+        'gratuit',                                                     // fr (+ gratuite)
+        'grátis', 'gratuito',                                          // pt
+        'za darmo', 'darmow', 'bezpłat',                               // pl
+        'бесплатно',                                                   // ru
+        'ücretsiz',                                                    // tr
+        '無料',                                                         // ja
+        '무료',                                                         // ko
+        '免费', '免費',                                                  // zh
+        'مجان'                                                          // ar (مجاني/مجانًا)
+    ];
 
     function isPaidBadgeText(raw) {
         if (!raw) return false;
@@ -343,11 +370,16 @@
     const SHORTS_CSS = `
         ytd-guide-entry-renderer:has(a[title="Shorts"]),
         ytd-mini-guide-entry-renderer:has(a[title="Shorts"]),
+        ytd-guide-entry-renderer:has(a[href^="/shorts"]),
+        ytd-mini-guide-entry-renderer:has(a[href^="/shorts"]),
         ytd-guide-entry-renderer a[title="Shorts"],
         ytd-mini-guide-entry-renderer a[title="Shorts"],
         yt-tab-shape[tab-title="Shorts"],
+        yt-tab-shape[tab-title="ショート"],
         tp-yt-paper-tab[aria-label="Shorts"],
+        tp-yt-paper-tab[aria-label="ショート"],
         tp-yt-paper-tab:has(> .tab-content[title="Shorts"]),
+        tp-yt-paper-tab:has(> .tab-content[title="ショート"]),
         ytm-pivot-bar-item-renderer:has(.pivot-shorts),
         ytm-pivot-bar-item-renderer:has([tab-identifier="pivot-shorts"]),
         ytm-pivot-bar-item-renderer:has(a[href^="/shorts"]),
