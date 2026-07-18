@@ -1,5 +1,18 @@
 # Changelog
 
+## 4.8.2 — 2026-07-18
+
+### Fixed
+
+- The channel page "Watched N / total" badge could exceed the channel's own video count (for example 596 / 514). YouTube's SPA keeps the previous channel page, header included, hidden in the DOM after navigation (verified live: on a watch page reached from a channel, the hidden `ytd-browse[page-subtype="channels"]`, its header h1, and even the channel's canonical link all remain readable). Channel-page detection therefore kept reporting the last visited channel on watch pages and feeds, and every watched video encountered there, including the entire related sidebar, was credited to that channel's tally. Channel identity is now derived from the URL and scraped only from the visible channel header, with a stale header that names a different handle contributing nothing.
+- On a genuine channel page, a tile carrying a different channel's byline (channel home shelves and featured playlists can surface other channels' videos) is still hidden as watched but no longer credited to the page channel's "Watched" count.
+- Since existing per-channel tallies may be inflated beyond repair, the watched database performs a one-time v4 migration that resets per-channel watched attributions; they rebuild from the channel's own pages and future watches. The watched-video set itself, channel video totals, and hidden tallies are untouched, so the migration never un-hides a video.
+- The badge's video total and its insertion point are likewise read only from the visible channel header, so a hidden cached page can no longer supply a stale total or swallow the badge.
+
+### Validation
+
+- New regressions: a cached hidden channel browse leaks no identity onto watch, home, or subscription pages; watched tiles with a foreign byline are hidden without being attributed; the v4 migration drops inflated attributions while preserving the watched set, totals, and hidden tallies, and post-migration attributions survive a reload. Full suite passes 90/90.
+
 ## 4.8.1 — 2026-07-17
 
 ### Fixed

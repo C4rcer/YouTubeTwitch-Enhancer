@@ -254,6 +254,52 @@ test('a failed storage write remains dirty and succeeds on retry', async () => {
     assert.deepEqual(Array.from(harness.state[key].ids), ['retry000001']);
 });
 
+test('v4 load drops inflated per-channel watched attributions but keeps totals and hidden', async () => {
+    const channel = { handle: 'example' };
+    const ids = ['chanvid00001', 'othervid0001'];
+    const seed = {
+        ytbWatchedMeta: { v: 3, epoch: 0, shards: 64, count: ids.length },
+        ytbWatchedChannels: {
+            epoch: 0,
+            records: {
+                '@example': {
+                    name: 'Example', handle: 'example', channelId: '',
+                    total: 514, ids: [...ids], hidden: ['hiddenvid001']
+                }
+            }
+        }
+    };
+    for (const id of ids) {
+        const key = 'ytbWatchedShard' + shardOf(id);
+        (seed[key] ||= []).push(id);
+    }
+    const harness = createHarness(seed);
+    const db = harness.db;
+    await db.whenReady();
+
+    // The watched set itself is untouched; only the channel attribution
+    // set (inflated by pre-v4 misattribution) resets.
+    assert.equal(db.isWatched('chanvid00001'), true);
+    assert.equal(db.isWatched('othervid0001'), true);
+    const stats = db.getChannelStats(channel);
+    assert.equal(stats.watched, 0);
+    assert.equal(stats.total, 514);
+    assert.equal(stats.hidden, 1);
+
+    await db.flush();
+    assert.equal(harness.state.ytbWatchedMeta.v, 4);
+    const stored = harness.state.ytbWatchedChannels.records['@example'];
+    assert.deepEqual(Array.from(stored.ids), []);
+    assert.deepEqual(Array.from(stored.hidden), ['hiddenvid001']);
+
+    // Attributions recorded after the migration survive the next load.
+    db.recordChannelVideo(channel, 'chanvid00001');
+    await db.flush();
+    const reloaded = createHarness(harness.state);
+    await reloaded.db.whenReady();
+    assert.equal(reloaded.db.getChannelStats(channel).watched, 1);
+});
+
 test('external shard changes advance the revision and notify the content filter', async () => {
     const harness = createHarness();
     const db = harness.db;

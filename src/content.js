@@ -850,41 +850,66 @@
         };
     }
 
-    // When sitting on a channel's own page, read its identity from the page,
-    // not just the URL — so legacy custom URLs (/linustechtips, /c/x, /user/x)
-    // resolve too. The canonical link gives the UC id for any URL form, and the
-    // header gives the @handle + display name.
+    // When sitting on a channel's own page, read its identity from the page.
+    // The URL identifies most channel pages (/@handle, /channel/UC, /c/,
+    // /user/); bare legacy custom URLs (/linustechtips) are recognised by the
+    // VISIBLE channel browse instead. The canonical link gives the UC id, and
+    // the header gives the @handle + display name.
     function getChannelInfoFromChannelPage() {
-        const browse = document.querySelector('ytd-browse[page-subtype="channels"]');
+        // A hidden channel browse is NOT evidence of a channel page: YouTube's
+        // SPA keeps the previous browse page (complete with the old channel's
+        // header and a channel canonical link) hidden in the DOM on watch
+        // pages, so a document-wide probe keeps reporting the last visited
+        // channel long after leaving it and every watched video on other
+        // surfaces gets credited to that channel's tally.
         const path = location.pathname;
-        let handle = (path.match(/\/@([\w.\-]+)/) || [])[1] || '';
-        let channelId = (path.match(/\/channel\/(UC[\w-]+)/) || [])[1] || '';
-        if (!handle && !channelId && !browse) return null;   // not a channel page
-
-        if (!channelId) {
-            const canon = document.querySelector('link[rel="canonical"]');
-            const cm = canon && (canon.getAttribute('href') || '').match(/\/channel\/(UC[\w-]+)/);
-            if (cm) channelId = cm[1];
+        const urlHandle = (path.match(/^\/@([\w.\-]+)/) || [])[1] || '';
+        const urlChannelId = (path.match(/^\/channel\/(UC[\w-]+)/) || [])[1] || '';
+        const browse = document.querySelector(
+            'ytd-browse[page-subtype="channels"]:not([hidden])');
+        if (!urlHandle && !urlChannelId && !/^\/(c|user)\//.test(path) && !browse) {
+            return null;
         }
-        const header = document.querySelector(
-            'yt-page-header-renderer, ytd-browse[page-subtype="channels"] #page-header, #channel-header, ' +
-            'ytm-c4-tabbed-header-renderer, .c4-tabbed-header'
-        );
-        if (!handle && header) {
-            const hLink = header.querySelector('a[href^="/@"]');
-            if (hLink) handle = ((hLink.getAttribute('href') || '').match(/\/@([\w.\-]+)/) || [])[1] || '';
-            if (!handle) {
-                const metaRow = header.querySelector('yt-content-metadata-view-model') || header;
-                const tm = (metaRow.textContent || '').match(/@([\w.\-]{2,})/);
-                if (tm) handle = tm[1];
+
+        // Scope DOM reads to the visible channel browse: a hidden cached
+        // copy may describe a different channel. ytm swaps page content
+        // instead of caching it, so the whole document is safe there. With
+        // neither (mid-navigation on desktop) trust only the URL identity.
+        const scope = browse || (document.querySelector('ytm-app') ? document : null);
+        let handle = urlHandle, channelId = urlChannelId, name = '';
+        if (scope) {
+            const header = scope.querySelector(
+                'yt-page-header-renderer, #page-header, #channel-header, ' +
+                'ytm-c4-tabbed-header-renderer, .c4-tabbed-header'
+            );
+            let headerHandle = '';
+            if (header) {
+                const hLink = header.querySelector('a[href^="/@"]');
+                if (hLink) headerHandle = ((hLink.getAttribute('href') || '').match(/\/@([\w.\-]+)/) || [])[1] || '';
+                if (!headerHandle) {
+                    const metaRow = header.querySelector('yt-content-metadata-view-model') || header;
+                    const tm = (metaRow.textContent || '').match(/@([\w.\-]{2,})/);
+                    if (tm) headerHandle = tm[1];
+                }
+            }
+            // A header naming a different handle belongs to a page we've
+            // already left (or not reached yet); scrape nothing from it.
+            if (!urlHandle || !headerHandle ||
+                headerHandle.toLowerCase() === urlHandle.toLowerCase()) {
+                if (!handle) handle = headerHandle;
+                if (!channelId) {
+                    const canon = document.querySelector('link[rel="canonical"]');
+                    const cm = canon && (canon.getAttribute('href') || '').match(/\/channel\/(UC[\w-]+)/);
+                    if (cm) channelId = cm[1];
+                }
+                const nameEl = scope.querySelector(
+                    'yt-page-header-renderer h1, yt-dynamic-text-view-model h1, ' +
+                    'ytd-channel-name #text, #channel-name #text, #channel-header #text, ' +
+                    'ytm-c4-tabbed-header-renderer h1, .c4-tabbed-header-channel-name'
+                );
+                name = nameEl ? cleanText(nameEl.textContent) : '';
             }
         }
-        const nameEl = document.querySelector(
-            'yt-page-header-renderer h1, yt-dynamic-text-view-model h1, ' +
-            'ytd-channel-name #text, #channel-name #text, #channel-header #text, ' +
-            'ytm-c4-tabbed-header-renderer h1, .c4-tabbed-header-channel-name'
-        );
-        const name = nameEl ? cleanText(nameEl.textContent) : '';
 
         if (!handle && !channelId && !name) return null;
         return { handle, channelId, name };
@@ -1080,19 +1105,31 @@
     // database (migration: newly-detected watched videos are remembered so we
     // still hide them once YouTube inevitably drops the bar), and attribute it
     // to the current channel page for the "Watched X/Y" badge.
+    // The channel a tile on the current channel page counts toward, or null.
+    // A tile carrying a different channel's byline is never credited to the
+    // page (home-tab shelves and featured playlists can surface other
+    // channels' videos); byline-less tiles (the Videos-tab grid) are the
+    // page channel's own uploads.
+    function attributionChannel(tile) {
+        if (!curChannelInfo || !tile) return null;
+        const own = getChannelInfoFromNode(tile);
+        return (!own || sameChannel(own, curChannelInfo)) ? curChannelInfo : null;
+    }
+
     function markTileWatched(node) {
         if (!WatchedDB || !node) return;
         const tile = node.closest(INNER_CONTAINERS) || node;
         const id = getVideoIdFromNode(tile);
         if (!id) return;
+        const chan = attributionChannel(tile);
         // A video the user manually hid stays categorized as hidden, even if it
         // still shows a progress bar — the explicit hide wins over the tally.
         if (hiddenSet.has(id)) {
-            if (curChannelInfo) WatchedDB.recordChannelHidden(curChannelInfo, id);
+            if (chan) WatchedDB.recordChannelHidden(chan, id);
             return;
         }
         WatchedDB.markWatched(id);
-        if (curChannelInfo) WatchedDB.recordChannelVideo(curChannelInfo, id);
+        if (chan) WatchedDB.recordChannelVideo(chan, id);
     }
 
     function getTileWatchedPercent(tile) {
@@ -1209,11 +1246,17 @@
             return { reason: 'paid', cacheable };
         }
         if (id && hiddenSet.has(id)) {
-            if (ctx.attributeChannel) WatchedDB.recordChannelHidden(curChannelInfo, id);
+            if (ctx.attributeChannel) {
+                const chan = attributionChannel(tile);
+                if (chan) WatchedDB.recordChannelHidden(chan, id);
+            }
             return { reason: 'hidden-id', cacheable };
         }
         if (ctx.checkWatched && id && WatchedDB && WatchedDB.isWatched(id)) {
-            if (ctx.attributeChannel) WatchedDB.recordChannelVideo(curChannelInfo, id);
+            if (ctx.attributeChannel) {
+                const chan = attributionChannel(tile);
+                if (chan) WatchedDB.recordChannelVideo(chan, id);
+            }
             return { reason: 'watched-history', cacheable };
         }
         if (ctx.checkWatched && ctx.checkProgress) {
@@ -1579,10 +1622,17 @@
     const VIDEO_COUNT_CJK = /([\d][\d., \s]*)\s*(?:本の動画|個の動画|動画|部影片|個影片|个视频|部视频|视频|동영상|개의\s*동영상)/;
 
     function channelHeaderEl() {
-        return document.querySelector('yt-page-header-renderer') ||
-               document.querySelector('ytd-browse[page-subtype="channels"] #page-header') ||
-               document.querySelector('ytm-c4-tabbed-header-renderer, .c4-tabbed-header') ||
-               document.querySelector('#channel-header');
+        // Scoped to the visible channel browse: the SPA keeps the previous
+        // channel's browse (header included) hidden in the DOM, and reading
+        // it would yield a stale video total or a badge in a hidden header.
+        const browse = document.querySelector(
+            'ytd-browse[page-subtype="channels"]:not([hidden])');
+        const scope = browse || (document.querySelector('ytm-app') ? document : null);
+        if (!scope) return null;
+        return scope.querySelector('yt-page-header-renderer') ||
+               scope.querySelector('#page-header') ||
+               scope.querySelector('ytm-c4-tabbed-header-renderer, .c4-tabbed-header') ||
+               scope.querySelector('#channel-header');
     }
 
     function channelHeaderMetaEl() {
@@ -1609,9 +1659,8 @@
     // insertion anchor so our stats line sits directly beneath it, left-aligned
     // and in the same font, rather than being crammed into the flex row.
     function channelMetaViewModel() {
-        return document.querySelector('yt-page-header-renderer yt-content-metadata-view-model') ||
-               document.querySelector('#page-header yt-content-metadata-view-model') ||
-               null;
+        const header = channelHeaderEl();
+        return (header && header.querySelector('yt-content-metadata-view-model')) || null;
     }
 
     function removeChannelBadge() {

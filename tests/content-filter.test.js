@@ -139,6 +139,22 @@ class FakeRoot {
 function loadContentHarness(watched, options = {}) {
     const listeners = {};
     const rootAttributes = new Map();
+    // Simulates YouTube's SPA page cache: a hidden ytd-browse for a channel
+    // page the user already left, still in the DOM with its header intact.
+    const staleChannelDom = options.staleChannelDom ? {
+        browse: {},
+        canonical: { getAttribute: () => 'https://www.youtube.com/channel/UCstale0000000000000000' },
+        header: {
+            textContent: 'stalechan @stalechan 1M subscribers 514 videos',
+            querySelector(sel) {
+                if (sel === 'a[href^="/@"]') return { getAttribute: () => '/@stalechan' };
+                if (sel.includes('yt-content-metadata-view-model')) {
+                    return { textContent: '@stalechan • 514 videos' };
+                }
+                return null;
+            }
+        }
+    } : null;
     const watchTitle = options.watchTitle || null;
     const playerData = options.playerData || null;
     const flexyData = options.flexyData || null;
@@ -163,6 +179,12 @@ function loadContentHarness(watched, options = {}) {
         querySelector(selector) {
             if (watchTitle && selector.includes('ytd-watch-metadata h1')) return watchTitle;
             if (watchFlexy && selector === 'ytd-watch-flexy[video-id]') return watchFlexy;
+            if (staleChannelDom) {
+                if (selector === 'ytd-browse[page-subtype="channels"]:not([hidden])') return null;
+                if (selector === 'ytd-browse[page-subtype="channels"]') return staleChannelDom.browse;
+                if (selector.includes('yt-page-header-renderer')) return staleChannelDom.header;
+                if (selector.includes('link[rel="canonical"]')) return staleChannelDom.canonical;
+            }
             return null;
         },
         querySelectorAll() { return []; },
@@ -170,6 +192,7 @@ function loadContentHarness(watched, options = {}) {
     };
 
     let revision = 0;
+    const channelAttributions = [];
     const watchedDb = {
         isWatched: id => watched.has(id),
         count: () => watched.size,
@@ -180,7 +203,7 @@ function loadContentHarness(watched, options = {}) {
             revision++;
             return true;
         },
-        recordChannelVideo() {},
+        recordChannelVideo(info, id) { channelAttributions.push({ info, id }); },
         recordChannelHidden() {},
         removeHidden() {}
     };
@@ -230,6 +253,8 @@ function loadContentHarness(watched, options = {}) {
         refreshDeArrowWatchTitle,
         setDeArrowCache(vid, value) { deCache.set(vid, value); },
         mutationNeedsMaintenance,
+        getChannelInfoFromChannelPage,
+        setCurrentChannel(info) { curChannelInfo = info; },
         setPath(path) {
             const url = new URL(path, location.origin);
             location.pathname = url.pathname;
@@ -259,7 +284,7 @@ function loadContentHarness(watched, options = {}) {
 
     vm.createContext(context);
     vm.runInContext(source, context, { filename: CONTENT_PATH });
-    return context.__YTB_FILTER_TEST__;
+    return Object.assign(context.__YTB_FILTER_TEST__, { channelAttributions });
 }
 
 function childListRecord(root) {
@@ -945,4 +970,60 @@ test('a localized paid badge hides the tile and a localized free badge does not'
     assert.equal(cards[0].dataset.ytbFilterReason, 'paid');
     assert.equal(cards[1].dataset.ytbFilterReason, undefined);
     assert.equal(cards[2].dataset.ytbFilterReason, undefined);
+});
+
+test('a cached hidden channel page never leaks channel identity onto other pages', () => {
+    const api = loadContentHarness(new Set(), { staleChannelDom: true });
+    api.configure({ settings: { enabled: true } });
+
+    api.setPath('/watch?v=abc12345678');
+    assert.equal(api.getChannelInfoFromChannelPage(), null,
+        'watch pages must not inherit the identity of the cached channel browse');
+    api.setPath('/');
+    assert.equal(api.getChannelInfoFromChannelPage(), null);
+    api.setPath('/feed/subscriptions');
+    assert.equal(api.getChannelInfoFromChannelPage(), null);
+
+    // On a real channel page the URL wins; the stale hidden header (a
+    // different channel) must contribute nothing.
+    api.setPath('/@realchan/videos');
+    const info = api.getChannelInfoFromChannelPage();
+    assert.equal(info.handle, 'realchan');
+    assert.equal(info.channelId, '', 'the stale canonical link must not supply a channel ID');
+    assert.equal(info.name, '', 'the stale hidden header must not supply a name');
+});
+
+test('watched tiles on a channel page are only credited to their own channel', () => {
+    const watched = new Set(['ownvid000001', 'foreignvid01', 'barevid00001']);
+    const api = loadContentHarness(watched);
+    api.configure({
+        settings: {
+            enabled: true,
+            hideWatched: true,
+            watchedChannel: true,
+            reduceFlashing: true
+        }
+    });
+    api.setPath('/@pagechan/videos');
+    api.setCurrentChannel({ handle: 'pagechan', channelId: '', name: 'Page Chan' });
+
+    const own = new FakeTile('ownvid000001', { handle: 'pagechan', channel: 'Page Chan' });
+    const foreign = new FakeTile('foreignvid01', { handle: 'otherchan', channel: 'Other Chan' });
+    const bare = new FakeTile('barevid00001');
+    bare.handle = '';
+    bare.channel = '';
+    bare.setVideo('barevid00001');   // regenerate anchors without a byline
+    api.processTiles([own, foreign, bare]);
+
+    assert.equal(own.dataset.ytbFilterReason, 'watched-history');
+    assert.equal(foreign.dataset.ytbFilterReason, 'watched-history',
+        'the foreign tile is still hidden as watched, just not attributed');
+    assert.equal(bare.dataset.ytbFilterReason, 'watched-history');
+    assert.deepEqual(
+        api.channelAttributions.map(a => a.id).sort(),
+        ['barevid00001', 'ownvid000001'],
+        'a tile with a different byline must not count toward this channel');
+    for (const a of api.channelAttributions) {
+        assert.equal(a.info.handle, 'pagechan');
+    }
 });
