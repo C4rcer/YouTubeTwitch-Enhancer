@@ -43,7 +43,7 @@
     const CHANNELS_KEY = 'ytbWatchedChannels';
     const OPS_KEY = 'ytbWatchedOps';          // channel-hidden operations
     const OPS_SHARD_PREFIX = 'ytbWatchedOpsShard';
-    const STORAGE_VERSION = 5;
+    const STORAGE_VERSION = 6;
     const LOAD_ATTEMPTS = 3;
     const LOAD_SNAPSHOT_MAX_WAIT = 2000;
     const LOAD_RETRY_INITIAL = 250;
@@ -411,6 +411,20 @@
                         for (const k of Object.keys(channels)) {
                             if (channels[k].ids.size) {
                                 channels[k].ids = new Set();
+                                channelsDirty = true;
+                            }
+                        }
+                    }
+                    // v6: pre-v5 versions could also write ANOTHER channel's
+                    // scraped video total into a record during the same stale
+                    // windows, and a wrong total never self-corrects when the
+                    // real one renders abbreviated ("3.2k videos"), which
+                    // older parsers could not read. Drop stored totals once;
+                    // the badge re-scrapes on the next channel visit.
+                    if (persistedVersion < 6) {
+                        for (const k of Object.keys(channels)) {
+                            if (channels[k].total != null) {
+                                channels[k].total = null;
                                 channelsDirty = true;
                             }
                         }

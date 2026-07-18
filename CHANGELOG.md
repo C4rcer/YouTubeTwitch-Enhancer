@@ -1,5 +1,16 @@
 # Changelog
 
+## 4.8.4 — 2026-07-18
+
+### Fixed
+
+- A channel could show another channel's video total in the "Watched N / total" badge (e.g. Gamers Nexus, 3.2k videos, showing "/ 514" inherited from a previously visited channel). Two causes: pre-4.8.3 versions wrote the previous channel's scraped total into the new channel's record during the same stale-header windows, and the total parser could not read abbreviated counts ("3.2k videos"), so the wrong stored value never self-corrected on the channel's own page. The parser now handles abbreviated counts (3.2k, 1.5m, 3,2 mil, 1,2 Tsd., 1,2 тыс., 1.2万 and similar, with ',' or '.' before a multiplier read as a decimal point), refuses a header row that names a different @handle than the current channel, and, as a side effect of the same fix, Russian and Greek totals parse for the first time (the old word-boundary check never matched after Cyrillic or Greek words).
+- Watched database v6: stored channel totals reset once, since pre-4.8.3 data may hold another channel's count. Watched attributions, hidden tallies, and the watched set are untouched; totals re-scrape on the next visit to each channel page, and the badge already falls back to the freshly scraped value, so the denominator reappears immediately.
+
+### Validation
+
+- The abbreviated parser was verified against the live Gamers Nexus header row ("@GamersNexus•2.63m subscribers•3.2k videos" parses to 3200, skipping the subscriber count). New regressions cover abbreviated formats across locales, the subscriber-count trap, and the foreign-handle rejection. Full suite passes 94/94.
+
 ## 4.8.3 — 2026-07-18
 
 ### Fixed

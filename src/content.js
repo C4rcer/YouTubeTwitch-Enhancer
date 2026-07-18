@@ -1673,9 +1673,38 @@
 
     // "513 videos" from the channel header, across the most common UI
     // languages, plus a CJK fallback. Thousands separators (',' '.' ' ')
-    // are stripped so "1,234 videos" -> 1234. Returns null if not shown.
-    const VIDEO_COUNT_RE = /([\d][\d., \s]*)\s*(?:videos?|vídeos?|vidéos?|videa|filmy|видео|βίντεο|video)\b/i;
-    const VIDEO_COUNT_CJK = /([\d][\d., \s]*)\s*(?:本の動画|個の動画|動画|部影片|個影片|个视频|部视频|视频|동영상|개의\s*동영상)/;
+    // are stripped so "1,234 videos" -> 1234; abbreviated counts
+    // ("3.2k videos", "3,2 mil videos", "1,2 Tsd. Videos") multiply out,
+    // with ',' or '.' before a multiplier read as a decimal point.
+    // Returns null if not shown.
+    const VIDEO_COUNT_RE = /([\d][\d., \s]*?)\s*(k|m|mil|tsd\.?|тыс\.?)?\s*(?:videos?|vídeos?|vidéos?|videa|filmy|видео|βίντεο|video)(?!\p{L})/iu;
+    const VIDEO_COUNT_CJK = /([\d][\d., \s]*?)\s*(万|千|만|천)?\s*(?:本の動画|個の動画|動画|部影片|個影片|个视频|部视频|视频|동영상|개의\s*동영상)/;
+    const COUNT_MULTIPLIERS = {
+        k: 1e3, mil: 1e3, tsd: 1e3, 'tsd.': 1e3, 'тыс': 1e3, 'тыс.': 1e3,
+        m: 1e6, '千': 1e3, '천': 1e3, '万': 1e4, '만': 1e4
+    };
+
+    // Pure text half of the total scrape (separated for the tests). When the
+    // expected @handle is known and the text names a DIFFERENT handle, the
+    // row belongs to another channel (a restamping header) and is rejected.
+    function parseVideoCountText(text, expectedHandle) {
+        if (!text) return null;
+        if (expectedHandle) {
+            const token = text.match(/@([\w.\-]{2,})/);
+            if (token && token[1].toLowerCase() !== expectedHandle.toLowerCase()) return null;
+        }
+        const m = text.match(VIDEO_COUNT_RE) || text.match(VIDEO_COUNT_CJK);
+        if (!m) return null;
+        const suffix = (m[2] || '').toLowerCase();
+        if (!suffix) {
+            const n = parseInt(m[1].replace(/[.,\s ]/g, ''), 10);
+            return isNaN(n) ? null : n;
+        }
+        const mult = COUNT_MULTIPLIERS[suffix];
+        if (!mult) return null;
+        const dec = parseFloat(m[1].replace(/[\s ]/g, '').replace(',', '.'));
+        return isNaN(dec) ? null : Math.round(dec * mult);
+    }
 
     function channelHeaderEl() {
         // Scoped to the visible channel browse: the SPA keeps the previous
@@ -1700,15 +1729,13 @@
     }
 
     function parseChannelVideoTotal() {
-        // Read the metadata row (subscribers · videos), not the whole header —
-        // the header also carries the "Videos" tab label, which would misfire.
+        // Read the metadata row (subscribers · videos), not the whole header;
+        // the full header also carries the "Videos" tab label, which would
+        // misfire.
         const header = channelHeaderMetaEl() || channelHeaderEl();
         if (!header) return null;
-        const text = header.textContent || '';
-        const m = text.match(VIDEO_COUNT_RE) || text.match(VIDEO_COUNT_CJK);
-        if (!m) return null;
-        const n = parseInt(m[1].replace(/[., \s]/g, ''), 10);
-        return isNaN(n) ? null : n;
+        return parseVideoCountText(header.textContent || '',
+            curChannelInfo ? curChannelInfo.handle : '');
     }
 
     // The metadata row itself (handle · subscribers · videos). Used as the

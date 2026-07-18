@@ -255,6 +255,7 @@ function loadContentHarness(watched, options = {}) {
         setDeArrowCache(vid, value) { deCache.set(vid, value); },
         mutationNeedsMaintenance,
         getChannelInfoFromChannelPage,
+        parseVideoCountText,
         setCurrentChannel(info) { curChannelInfo = info; },
         setPath(path) {
             const url = new URL(path, location.origin);
@@ -1124,4 +1125,28 @@ test('a reused grid card keeps the old channel until it is restamped (carry-over
     assert.deepEqual(api.channelAttributions.map(a => a.info.handle + ':' + a.id),
         ['channela:oldchanvid01', 'channelb:newchanvid01'],
         'after the restamp the card belongs to the new channel');
+});
+
+test('channel video totals parse abbreviated counts and reject foreign header rows', () => {
+    const api = loadContentHarness(new Set());
+    api.configure({ settings: { enabled: true } });
+    const parse = api.parseVideoCountText;
+
+    assert.equal(parse('514 videos'), 514);
+    assert.equal(parse('1,234 videos'), 1234);
+    assert.equal(parse('@gamersnexus • 2.63m subscribers • 3.2k videos'), 3200,
+        'the subscriber count must not shadow the abbreviated video count');
+    assert.equal(parse('3.2K videos'), 3200);
+    assert.equal(parse('3,2 mil vídeos'), 3200);
+    assert.equal(parse('1,2 Tsd. Videos'), 1200);
+    assert.equal(parse('1,2 тыс. видео'), 1200);
+    assert.equal(parse('1.5m videos'), 1500000);
+    assert.equal(parse('1.2万本の動画'), 12000);
+    assert.equal(parse('no counts here'), null);
+
+    // While a reused header restamps, its rows can still belong to the
+    // previous channel; a mismatched @handle rejects the whole row.
+    assert.equal(parse('@gamersnexus • 3.2k videos', 'gamersnexus'), 3200);
+    assert.equal(parse('@oldchannel • 514 videos', 'gamersnexus'), null);
+    assert.equal(parse('514 videos', 'gamersnexus'), 514);
 });
