@@ -73,6 +73,7 @@ class FakeTile {
         if (selector === '.ytb-removed') {
             return this.classList.contains('ytb-removed') ? this : null;
         }
+        if (selector === 'ytd-browse') return this.browseEl || null;
         return selector.includes(this.tag) ? this : null;
     }
 
@@ -985,12 +986,15 @@ test('a cached hidden channel page never leaks channel identity onto other pages
     assert.equal(api.getChannelInfoFromChannelPage(), null);
 
     // On a real channel page the URL wins; the stale hidden header (a
-    // different channel) must contribute nothing.
+    // different channel) must contribute nothing, and without a rendered
+    // matching header the identity stays unconfirmed (no attribution).
     api.setPath('/@realchan/videos');
     const info = api.getChannelInfoFromChannelPage();
     assert.equal(info.handle, 'realchan');
     assert.equal(info.channelId, '', 'the stale canonical link must not supply a channel ID');
     assert.equal(info.name, '', 'the stale hidden header must not supply a name');
+    assert.equal(info.confirmed, false,
+        'identity must stay unconfirmed until the visible header matches the URL');
 });
 
 test('watched tiles on a channel page are only credited to their own channel', () => {
@@ -1005,7 +1009,7 @@ test('watched tiles on a channel page are only credited to their own channel', (
         }
     });
     api.setPath('/@pagechan/videos');
-    api.setCurrentChannel({ handle: 'pagechan', channelId: '', name: 'Page Chan' });
+    api.setCurrentChannel({ handle: 'pagechan', channelId: '', name: 'Page Chan', confirmed: true });
 
     const own = new FakeTile('ownvid000001', { handle: 'pagechan', channel: 'Page Chan' });
     const foreign = new FakeTile('foreignvid01', { handle: 'otherchan', channel: 'Other Chan' });
@@ -1026,4 +1030,98 @@ test('watched tiles on a channel page are only credited to their own channel', (
     for (const a of api.channelAttributions) {
         assert.equal(a.info.handle, 'pagechan');
     }
+});
+
+test('byline-less tiles outside the confirmed channel browse are never attributed', () => {
+    const watched = new Set(['transvid0001', 'ownvid000001', 'cachevid0001']);
+    const api = loadContentHarness(watched);
+    api.configure({
+        settings: {
+            enabled: true,
+            hideWatched: true,
+            watchedChannel: true,
+            reduceFlashing: true
+        }
+    });
+    api.setPath('/@pagechan/videos');
+    const strip = tile => {
+        tile.handle = '';
+        tile.channel = '';
+        tile.setVideo(tile.id);   // regenerate anchors without a byline
+        return tile;
+    };
+
+    // Mid-navigation (URL flipped, header still the previous channel's):
+    // identity is unconfirmed, so the old page's grid attributes nothing.
+    api.setCurrentChannel({ handle: 'pagechan', channelId: '', name: '', confirmed: false, browse: null });
+    const transitional = strip(new FakeTile('transvid0001'));
+    api.processTiles([transitional]);
+    assert.equal(transitional.dataset.ytbFilterReason, 'watched-history',
+        'hiding still applies while attribution is suspended');
+    assert.deepEqual(api.channelAttributions, []);
+
+    // Confirmed page: only tiles inside the channel's visible browse count.
+    // The SPA keeps other channels' cached pages hidden in the DOM with
+    // their byline-less grids intact; those must not be credited here.
+    const pageBrowse = { label: 'visible pagechan browse' };
+    api.setCurrentChannel({
+        handle: 'pagechan', channelId: '', name: 'Page Chan',
+        confirmed: true, browse: pageBrowse
+    });
+    const own = strip(new FakeTile('ownvid000001'));
+    own.browseEl = pageBrowse;
+    const cached = strip(new FakeTile('cachevid0001'));
+    cached.browseEl = { label: 'hidden cached browse of another channel' };
+    api.processTiles([own, cached]);
+
+    assert.equal(own.dataset.ytbFilterReason, 'watched-history');
+    assert.equal(cached.dataset.ytbFilterReason, 'watched-history');
+    assert.deepEqual(api.channelAttributions.map(a => a.id), ['ownvid000001'],
+        'only the tile inside the confirmed visible browse is credited');
+});
+
+test('a reused grid card keeps the old channel until it is restamped (carry-over window)', () => {
+    // Verified live: on a channel-to-channel SPA navigation the header
+    // confirms the new channel seconds before the reused grid restamps, so
+    // the previous channel's byline-less cards sit inside the CONFIRMED
+    // browse. Those carried-over cards must never be credited to the new
+    // channel; once restamped with the new channel's videos they count.
+    const watched = new Set(['oldchanvid01', 'newchanvid01']);
+    const api = loadContentHarness(watched);
+    api.configure({
+        settings: {
+            enabled: true,
+            hideWatched: true,
+            watchedChannel: true,
+            reduceFlashing: true
+        }
+    });
+
+    const card = new FakeTile('oldchanvid01');
+    card.handle = '';
+    card.channel = '';
+    card.setVideo('oldchanvid01');   // byline-less grid card
+
+    api.setPath('/@channela/videos');
+    api.setCurrentChannel({ handle: 'channela', channelId: '', name: 'Channel A', confirmed: true });
+    api.processTiles([card]);
+    assert.deepEqual(api.channelAttributions.map(a => a.info.handle + ':' + a.id),
+        ['channela:oldchanvid01'], 'on its own page the grid card is credited normally');
+
+    // SPA navigation to channel B: same element, same video, new context.
+    api.setPath('/@channelb/videos');
+    api.setCurrentChannel({ handle: 'channelb', channelId: '', name: 'Channel B', confirmed: true });
+    api.processTiles([card]);
+    assert.equal(card.dataset.ytbFilterReason, 'watched-history',
+        'the carried-over card is still hidden as watched');
+    assert.deepEqual(api.channelAttributions.map(a => a.info.handle + ':' + a.id),
+        ['channela:oldchanvid01'],
+        'the carried-over card must not be credited to the new channel');
+
+    // YouTube restamps the recycled card with the new channel's video.
+    card.setVideo('newchanvid01');
+    api.processTiles([card]);
+    assert.deepEqual(api.channelAttributions.map(a => a.info.handle + ':' + a.id),
+        ['channela:oldchanvid01', 'channelb:newchanvid01'],
+        'after the restamp the card belongs to the new channel');
 });

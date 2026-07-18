@@ -1,5 +1,17 @@
 # Changelog
 
+## 4.8.3 — 2026-07-18
+
+### Fixed
+
+- The 4.8.2 watched-counter fix was incomplete: the per-channel "Watched" tally could still absorb other channels' videos on channel-to-channel navigation, which is why the counter jumped when moving between channel pages. Two remaining leaks, both verified live: the SPA keeps other channels' cached pages hidden in the DOM with their byline-less video grids intact, and the tile scanner visits them; and on a channel-to-channel navigation the reused page confirms its new header seconds before the grid restamps, so the previous channel's byline-less cards briefly sit inside the new channel's confirmed page (about 3 seconds in live sampling). Channel attribution of a byline-less card now requires all of: a confirmed page identity (rendered header matching the URL, canonical link for /channel/UC pages), the card living inside that channel's visible page, and the card not being a carry-over (a recycled element still holding the video it had under another page's context attributes nothing until it is restamped with the new channel's video). Hiding of watched videos is unaffected throughout, including while attribution is suspended.
+- The "Watched N / total" badge and the scraped channel video total now wait for the confirmed header, so a mid-navigation header can no longer supply another channel's total or host the badge.
+- Watched database v5: one more one-time reset of the per-channel watched attribution sets, since v4 data could be re-polluted within seconds of normal browsing. Totals, hidden tallies, and the watched set itself are preserved; nothing is un-hidden.
+
+### Validation
+
+- Live-verified the navigation timeline on youtube.com: the URL flips first, the header confirms roughly 300ms later, and the reused grid keeps the previous channel's cards for about 3 seconds under the new header. New regressions cover all three guards: unconfirmed identity attributes nothing, byline-less cards outside the confirmed visible page are ignored, and a carried-over card is not credited to the new channel until it is restamped. Full suite passes 92/92.
+
 ## 4.8.2 — 2026-07-18
 
 ### Fixed

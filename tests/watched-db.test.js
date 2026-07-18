@@ -254,11 +254,11 @@ test('a failed storage write remains dirty and succeeds on retry', async () => {
     assert.deepEqual(Array.from(harness.state[key].ids), ['retry000001']);
 });
 
-test('v4 load drops inflated per-channel watched attributions but keeps totals and hidden', async () => {
+test('v5 load drops inflated per-channel watched attributions but keeps totals and hidden', async () => {
     const channel = { handle: 'example' };
     const ids = ['chanvid00001', 'othervid0001'];
     const seed = {
-        ytbWatchedMeta: { v: 3, epoch: 0, shards: 64, count: ids.length },
+        ytbWatchedMeta: { v: 4, epoch: 0, shards: 64, count: ids.length },
         ytbWatchedChannels: {
             epoch: 0,
             records: {
@@ -287,7 +287,7 @@ test('v4 load drops inflated per-channel watched attributions but keeps totals a
     assert.equal(stats.hidden, 1);
 
     await db.flush();
-    assert.equal(harness.state.ytbWatchedMeta.v, 4);
+    assert.equal(harness.state.ytbWatchedMeta.v, 5);
     const stored = harness.state.ytbWatchedChannels.records['@example'];
     assert.deepEqual(Array.from(stored.ids), []);
     assert.deepEqual(Array.from(stored.hidden), ['hiddenvid001']);

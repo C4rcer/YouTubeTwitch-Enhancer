@@ -43,7 +43,7 @@
     const CHANNELS_KEY = 'ytbWatchedChannels';
     const OPS_KEY = 'ytbWatchedOps';          // channel-hidden operations
     const OPS_SHARD_PREFIX = 'ytbWatchedOpsShard';
-    const STORAGE_VERSION = 4;
+    const STORAGE_VERSION = 5;
     const LOAD_ATTEMPTS = 3;
     const LOAD_SNAPSHOT_MAX_WAIT = 2000;
     const LOAD_RETRY_INITIAL = 250;
@@ -400,13 +400,14 @@
                     const persistedMeta = got[META_KEY];
                     const persistedVersion = (persistedMeta && typeof persistedMeta === 'object' &&
                         Number.isFinite(persistedMeta.v)) ? persistedMeta.v : 0;
-                    // v4: earlier versions could credit a channel with videos
-                    // that merely sat near its lingering hidden page in
-                    // YouTube's DOM, so per-channel watched tallies may be
-                    // inflated beyond repair. Drop the attribution sets once;
-                    // they rebuild from verified channel-page scans and future
+                    // v5: earlier versions could credit a channel with videos
+                    // from other channels' cached hidden pages or from the
+                    // previous page mid-navigation, so per-channel watched
+                    // tallies may be inflated beyond repair (v4 closed only
+                    // part of the leak). Drop the attribution sets once; they
+                    // rebuild from verified channel-page scans and future
                     // watches. The watched set itself is untouched.
-                    if (persistedVersion < 4) {
+                    if (persistedVersion < 5) {
                         for (const k of Object.keys(channels)) {
                             if (channels[k].ids.size) {
                                 channels[k].ids = new Set();

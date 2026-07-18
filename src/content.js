@@ -877,6 +877,11 @@
         // neither (mid-navigation on desktop) trust only the URL identity.
         const scope = browse || (document.querySelector('ytm-app') ? document : null);
         let handle = urlHandle, channelId = urlChannelId, name = '';
+        // Mid-navigation the visible browse, its header, and the canonical
+        // link can all still describe the page we came FROM while the URL is
+        // already the new channel. Scrape (and later, attribute videos) only
+        // once the rendered page demonstrably belongs to the URL's channel.
+        let confirmed = false;
         if (scope) {
             const header = scope.querySelector(
                 'yt-page-header-renderer, #page-header, #channel-header, ' +
@@ -892,14 +897,22 @@
                     if (tm) headerHandle = tm[1];
                 }
             }
-            // A header naming a different handle belongs to a page we've
-            // already left (or not reached yet); scrape nothing from it.
-            if (!urlHandle || !headerHandle ||
-                headerHandle.toLowerCase() === urlHandle.toLowerCase()) {
+            const canon = document.querySelector('link[rel="canonical"]');
+            const canonHref = canon ? (canon.getAttribute('href') || '') : '';
+            if (urlHandle) {
+                confirmed = !!headerHandle &&
+                    headerHandle.toLowerCase() === urlHandle.toLowerCase();
+            } else if (urlChannelId) {
+                confirmed = canonHref.includes(urlChannelId);
+            } else {
+                // Legacy /c/, /user/, or bare custom URL: no URL identity to
+                // check against; the rendered header is the only source.
+                confirmed = !!headerHandle;
+            }
+            if (confirmed) {
                 if (!handle) handle = headerHandle;
                 if (!channelId) {
-                    const canon = document.querySelector('link[rel="canonical"]');
-                    const cm = canon && (canon.getAttribute('href') || '').match(/\/channel\/(UC[\w-]+)/);
+                    const cm = canonHref.match(/\/channel\/(UC[\w-]+)/);
                     if (cm) channelId = cm[1];
                 }
                 const nameEl = scope.querySelector(
@@ -912,7 +925,7 @@
         }
 
         if (!handle && !channelId && !name) return null;
-        return { handle, channelId, name };
+        return { handle, channelId, name, confirmed, browse: browse || null };
     }
 
     // On a watch page, read the channel from the owner/uploader byline. Capture
@@ -1108,20 +1121,35 @@
     // The channel a tile on the current channel page counts toward, or null.
     // A tile carrying a different channel's byline is never credited to the
     // page (home-tab shelves and featured playlists can surface other
-    // channels' videos); byline-less tiles (the Videos-tab grid) are the
-    // page channel's own uploads.
-    function attributionChannel(tile) {
-        if (!curChannelInfo || !tile) return null;
+    // channels' videos). Byline-less tiles (the Videos-tab grid) are the page
+    // channel's own uploads, but only when:
+    //   - the page identity is confirmed (header matches the URL), and
+    //   - the tile lives inside that channel's visible browse (the SPA keeps
+    //     other channels' cached pages hidden in the DOM with their
+    //     byline-less grids intact), and
+    //   - the caller established the tile is not a carry-over: on a
+    //     channel-to-channel navigation the header confirms seconds before
+    //     the reused grid restamps, so the previous channel's tiles sit
+    //     inside the CONFIRMED browse until their data arrives (verified
+    //     live: ~3s of stale tiles under the new channel's header).
+    function attributionChannel(tile, bylinelessEligible) {
+        if (!curChannelInfo || !curChannelInfo.confirmed || !tile) return null;
         const own = getChannelInfoFromNode(tile);
-        return (!own || sameChannel(own, curChannelInfo)) ? curChannelInfo : null;
+        if (own) return sameChannel(own, curChannelInfo) ? curChannelInfo : null;
+        if (!bylinelessEligible) return null;
+        const browse = curChannelInfo.browse;
+        if (browse && (!tile.closest || tile.closest('ytd-browse') !== browse)) {
+            return null;
+        }
+        return curChannelInfo;
     }
 
-    function markTileWatched(node) {
+    function markTileWatched(node, attrEligible) {
         if (!WatchedDB || !node) return;
         const tile = node.closest(INNER_CONTAINERS) || node;
         const id = getVideoIdFromNode(tile);
         if (!id) return;
-        const chan = attributionChannel(tile);
+        const chan = attributionChannel(tile, attrEligible);
         // A video the user manually hid stays categorized as hidden, even if it
         // still shows a progress bar — the explicit hide wins over the tally.
         if (hiddenSet.has(id)) {
@@ -1161,7 +1189,10 @@
         });
         for (const [tile, pct] of percentages) {
             if (pct < settings.watchedThreshold) continue;
-            markTileWatched(tile);
+            // Record globally but never attribute from this pass: it has no
+            // carry-over knowledge. The classify pass re-runs right after
+            // (markWatched bumps the revision) and attributes safely.
+            markTileWatched(tile, false);
             removeTile(tile, 'watched-progress');
         }
     }
@@ -1178,12 +1209,21 @@
                 (WatchedDB && WatchedDB.revision ? WatchedDB.revision() : 0) +
                 ':' + location.pathname + ':' +
                 (curChannelInfo
-                    ? (curChannelInfo.handle || curChannelInfo.channelId || curChannelInfo.name || '')
+                    ? (curChannelInfo.handle || curChannelInfo.channelId || curChannelInfo.name || '') +
+                      // Attribution is a classification side-effect; cards
+                      // cached while the page was unconfirmed must be
+                      // re-evaluated once the header confirms the channel.
+                      (curChannelInfo.confirmed ? ':y' : ':n')
                     : ''),
             checkWatched,
             checkChannels: state.blockedChannels.length > 0,
             checkKeywords: keywordMatchers.length > 0,
             attributeChannel: !!(WatchedDB && curChannelInfo),
+            // Identity key byline-less attribution is stamped with; empty
+            // while the page identity is unconfirmed.
+            attrKey: (WatchedDB && curChannelInfo && curChannelInfo.confirmed)
+                ? (curChannelInfo.handle || curChannelInfo.channelId || curChannelInfo.name || '')
+                : '',
             blockShorts: !!settings.blockShorts,
             hideMixes: !!settings.hideMixes,
             hidePlaylists: hidePlaylistsHere,
@@ -1218,7 +1258,7 @@
         return false;
     }
 
-    function classifyTile(tile, id, ctx) {
+    function classifyTile(tile, id, ctx, attrEligible) {
         let cacheable = !!id;
 
         if (ctx.blockShorts &&
@@ -1247,14 +1287,14 @@
         }
         if (id && hiddenSet.has(id)) {
             if (ctx.attributeChannel) {
-                const chan = attributionChannel(tile);
+                const chan = attributionChannel(tile, attrEligible);
                 if (chan) WatchedDB.recordChannelHidden(chan, id);
             }
             return { reason: 'hidden-id', cacheable };
         }
         if (ctx.checkWatched && id && WatchedDB && WatchedDB.isWatched(id)) {
             if (ctx.attributeChannel) {
-                const chan = attributionChannel(tile);
+                const chan = attributionChannel(tile, attrEligible);
                 if (chan) WatchedDB.recordChannelVideo(chan, id);
             }
             return { reason: 'watched-history', cacheable };
@@ -1262,7 +1302,7 @@
         if (ctx.checkWatched && ctx.checkProgress) {
             const pct = getTileWatchedPercent(tile);
             if (pct !== null && pct >= settings.watchedThreshold) {
-                markTileWatched(tile);
+                markTileWatched(tile, attrEligible);
                 return { reason: 'watched-progress', cacheable };
             }
         }
@@ -1313,7 +1353,16 @@
             delete target.dataset.ytbFilterReason;
         }
 
-        const result = classifyTile(target, id, ctx);
+        // Byline-less channel attribution is allowed only for cards that are
+        // NOT carried over from a previous page: brand-new elements, cards
+        // restamped with a different video since last seen, or cards last
+        // seen under this same channel. A card still holding the same video
+        // it had under another page's context is the old page's content
+        // lingering in a reused grid.
+        const attrEligible = !!ctx.attrKey &&
+            (!previous || previous.videoId !== id || previous.attrKey === ctx.attrKey);
+
+        const result = classifyTile(target, id, ctx, attrEligible);
         if (result.reason) {
             removeTile(target, result.reason);
         } else if (target.dataset.ytbFilterReason) {
@@ -1322,7 +1371,14 @@
         }
 
         if (result.cacheable) {
-            tileCache.set(target, { version: ctx.version, videoId: id, reason: result.reason });
+            tileCache.set(target, {
+                version: ctx.version,
+                videoId: id,
+                reason: result.reason,
+                // An ineligible card keeps the context it was last eligible
+                // under, so a later pass cannot launder it into this channel.
+                attrKey: attrEligible ? ctx.attrKey : (previous ? previous.attrKey : '')
+            });
         } else {
             tileCache.delete(target); // never freeze a partially hydrated shell
         }
@@ -1724,6 +1780,9 @@
 
     function updateChannelWatchBadge() {
         if (!WatchedDB || !curChannelInfo) { removeChannelBadge(); return; }
+        // Mid-navigation the visible header (and its "N videos" total) still
+        // belongs to the previous page; wait until the identity is confirmed.
+        if (!curChannelInfo.confirmed) return;
         const total = parseChannelVideoTotal();
         if (total != null) WatchedDB.setChannelTotal(curChannelInfo, total);
         const stats = WatchedDB.getChannelStats(curChannelInfo) || { watched: 0, total: null, hidden: 0 };
@@ -3206,7 +3265,7 @@
         const id = getVideoIdFromNode(tile);
         if (!id) { toast('Could not read a video ID here.'); return; }
         if (!hiddenSet.has(id)) state.hiddenVideoIds.push(id);
-        const chan = getChannelInfoFromNode(tile) || curChannelInfo;
+        const chan = getChannelInfoFromNode(tile) || attributionChannel(tile, true);
         rememberHiddenVideo(id, tile, chan);
         // Count it against this video's channel (separate from watched).
         if (WatchedDB) {
@@ -3223,7 +3282,7 @@
         if (!WatchedDB) return;
         const tile = findTileFromTarget(target);
         let id = tile ? getVideoIdFromNode(tile) : null;
-        let chan = tile ? getChannelInfoFromNode(tile) : null;
+        let chan = tile ? (getChannelInfoFromNode(tile) || attributionChannel(tile, true)) : null;
         if (!id && location.pathname === '/watch') {
             id = watchVideoId();
             chan = getWatchPageOwnerInfo();
@@ -4360,7 +4419,7 @@
         e.preventDefault();
         e.stopPropagation();
         if (!hiddenSet.has(id)) state.hiddenVideoIds.push(id);
-        const chan = tile ? getChannelInfoFromNode(tile) : curChannelInfo;
+        const chan = tile ? (getChannelInfoFromNode(tile) || attributionChannel(tile, true)) : null;
         rememberHiddenVideo(id, tile || still, chan);
         if (WatchedDB) {   // count against the channel (separate from watched)
             if (chan) WatchedDB.recordChannelHidden(chan, id);
