@@ -1,5 +1,15 @@
 # Changelog
 
+## 4.8.5 — 2026-07-22
+
+### Fixed
+
+- Auto-claim drops silently stopped claiming on the drops inventory page. Twitch changed the inventory claim control from a styled link with the exact text "Claim" to a plain button labelled "Claim Now" with no stable data attributes, so the claim pass (which still ran every 2.5 seconds) never matched anything. The matcher now accepts "Claim Now" as well as "Claim"; all existing guards (stable-attribute match, disabled state, skipping the popover's link to the inventory page) are unchanged.
+
+### Validation
+
+- Verified against the live inventory DOM with two claimable rewards: enumerating every link and button in the page's main area whose text or stable attributes mention "claim" returned exactly the two "Claim Now" buttons, and the updated filter matches both and nothing else. Full suite passes 94/94.
+
 ## 4.8.4 — 2026-07-18
 
 ### Fixed
