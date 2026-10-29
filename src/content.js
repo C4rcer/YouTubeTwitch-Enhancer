@@ -255,12 +255,29 @@
         'ytm-statement-banner-renderer'
     ].join(',');
 
+    // Search results group Shorts in a generic grid-shelf-view-model (a "Shorts"
+    // section header, the Shorts lockups, then a "Show more" button; verified
+    // live 2026-10). The element is not Shorts-specific, so a shelf only counts
+    // once it holds Shorts.
+    const GRID_SHELF = 'grid-shelf-view-model';
+    const GRID_SHELF_SHORTS = [
+        'ytm-shorts-lockup-view-model',
+        'ytm-shorts-lockup-view-model-v2',
+        'a[href^="/shorts/"]'
+    ].join(',');
+
+    function isShortsGridShelf(el) {
+        return !!(el && el.matches && el.matches(GRID_SHELF) &&
+            el.querySelector(GRID_SHELF_SHORTS));
+    }
+
     // Non-tile shelves and promos still use their older dedicated passes.
     const LEGACY_MUTATION_CONTAINERS = [
         'ytd-rich-section-renderer',
         'ytd-rich-shelf-renderer',
         'ytd-reel-shelf-renderer',
         'ytm-reel-shelf-renderer',
+        GRID_SHELF,
         NON_VIDEO_CARDS
     ].join(',');
 
@@ -384,7 +401,9 @@
         ytm-pivot-bar-item-renderer:has([tab-identifier="pivot-shorts"]),
         ytm-pivot-bar-item-renderer:has(a[href^="/shorts"]),
         ytm-reel-shelf-renderer,
-        ytm-rich-section-renderer:has(ytm-reel-shelf-renderer) {
+        ytm-rich-section-renderer:has(ytm-reel-shelf-renderer),
+        grid-shelf-view-model:has(ytm-shorts-lockup-view-model-v2),
+        grid-shelf-view-model:has(ytm-shorts-lockup-view-model) {
             display: none !important;
         }
     `;
@@ -792,15 +811,29 @@
         return /\d{1,3}[KMB]?\s*views/i.test(t) || STATS_WORDS.test(t);
     }
 
-    // Video title from a tile, for keyword blocking. Tries the classic
-    // renderers first, then the newer lockup view-models, then any heading.
+    // Lockup title elements, minus the metadata host: on compact (sidebar)
+    // lockups the host itself carries ytLockupMetadataViewModelTitleMaxLines3,
+    // and its text is title + channel + views + age (verified live 2026-10).
+    const LOCKUP_TITLE_LINK = 'a[class*="lockupMetadataViewModelTitle" i]';
+    const LOCKUP_TITLE_ANY = '[class*="lockupMetadataViewModelTitle" i]' +
+        ':not(yt-lockup-metadata-view-model)';
+
+    // Video title from a tile, for keyword blocking. Queried in priority tiers
+    // (querySelector returns document order, not selector order): the classic
+    // renderers, the lockup heading's title attribute, the lockup title link,
+    // then any heading.
+    const TITLE_TIERS = [
+        '#video-title, a#video-title-link',
+        'h3[title]',
+        LOCKUP_TITLE_LINK,
+        LOCKUP_TITLE_ANY,
+        'h3 a[title], h3, h4'
+    ];
+
     function getTitleFromNode(node) {
-        const el = node.querySelector(
-            '#video-title, a#video-title-link, ' +
-            '[class*="lockupMetadataViewModelTitle" i], ' +
-            'h3 a[title], h3, h4'
-        );
-        if (el) {
+        for (const selector of TITLE_TIERS) {
+            const el = node.querySelector(selector);
+            if (!el) continue;
             const t = cleanText(el.getAttribute && el.getAttribute('title') || el.textContent);
             if (t) return t;
         }
@@ -1039,6 +1072,9 @@
             'ytm-reel-shelf-renderer:not(.ytb-removed)',
             'ytm-reel-item-renderer:not(.ytb-removed)'
         ].join(',')).forEach(hideEl);
+        document.querySelectorAll(GRID_SHELF + ':not(.ytb-removed)').forEach(shelf => {
+            if (isShortsGridShelf(shelf)) hideEl(shelf);
+        });
         document.querySelectorAll('a[href*="/shorts/"]').forEach(a => {
             const cell = a.closest(OUTER_GRID_CELLS) || a.closest('yt-lockup-view-model');
             if (cell && !cell.classList.contains('ytb-removed')) hideEl(cell);
@@ -2478,7 +2514,8 @@
         // LINK. Never the bare h3 heading-reset wrapper — it computes to
         // black, so writing text there leaves it dark and unreadable.
         return node.querySelector('#video-title, a#video-title-link') ||
-               node.querySelector('a[class*="lockupMetadataViewModelTitle" i], [class*="lockupMetadataViewModelTitle" i]') ||
+               node.querySelector(LOCKUP_TITLE_LINK) ||
+               node.querySelector(LOCKUP_TITLE_ANY) ||
                node.querySelector('h3 a[title], h4');
     }
 
@@ -4177,6 +4214,16 @@
         rememberChannelSpeed(rate);
     }
 
+    // With configurable shortcuts on (the default), the speed hotkeys run in
+    // player-controls.js instead of the legacy handler below; it reports each
+    // change so per-channel memory still records it.
+    function onSpeedAction(event) {
+        if (retired || !event.detail || event.detail.site !== 'youtube') return;
+        const speed = Number(event.detail.speed);
+        if (Number.isFinite(speed) && speed >= 0.1 && speed <= 8) rememberChannelSpeed(speed);
+    }
+    document.addEventListener('ytb-speed-action', onSpeedAction);
+
     document.addEventListener('keydown', (e) => {
         if (retired || sharedInputActionsEnabled || !settings.enabled || !settings.ytSpeedHotkeys) return;
         if (e.ctrlKey || e.altKey || e.metaKey) return;
@@ -4606,10 +4653,10 @@
                 if (settings.blockShorts || settings.hideNewsShelves) hideEl(candidate);
                 continue;
             }
-            if (settings.blockShorts && candidate.matches(
+            if (settings.blockShorts && (candidate.matches(
                 'ytd-rich-shelf-renderer[is-shorts], ytd-reel-shelf-renderer, ' +
                 'ytm-reel-shelf-renderer'
-            )) hideEl(candidate);
+            ) || isShortsGridShelf(candidate))) hideEl(candidate);
         }
     }
     function mutationTouchesLegacyContainer(node) {
@@ -4685,6 +4732,7 @@
         }
         pendingTileEnhancements.clear();
         document.removeEventListener('ytb-apply-playback-profile', onPlaybackProfile);
+        document.removeEventListener('ytb-speed-action', onSpeedAction);
         document.querySelectorAll('.ytb-menu-item').forEach(el => {
             if (el.dataset.ytbInstance === INSTANCE_ID) el.remove();
         });

@@ -215,8 +215,24 @@ function buildHarness(data) {
         return event;
     }
 
-    return { video, videoTarget, fire };
+    function changeData(newValue) {
+        for (const handler of storageListeners.slice()) handler({ data: { newValue } }, 'local');
+    }
+
+    return { video, videoTarget, fire, changeData, on: document.addEventListener };
 }
+
+const settle = () => new Promise(resolve => setTimeout(resolve, 10));
+const bracketRight = {
+    code: 'BracketRight',
+    key: ']',
+    ctrlKey: false,
+    altKey: false,
+    shiftKey: false,
+    metaKey: false,
+    repeat: false,
+    isComposing: false
+};
 
 test('configured keyboard and wheel actions handle media and show conflicts nowhere at runtime', async () => {
     const harness = buildHarness({
@@ -281,4 +297,57 @@ test('configured shortcuts are ignored in editable targets', async () => {
         isComposing: false
     });
     assert.equal(harness.video.playbackRate, 1);
+});
+
+test('unrelated data writes keep a manual speed; profile edits re-apply', async () => {
+    const data = {
+        settings: { enabled: true, ytSpeedHotkeys: true, volumeBoost: 1 },
+        inputBindings: {
+            youtube: { enabled: true, keyboard: { speedUp: 'BracketRight' }, mouse: {}, wheel: {} }
+        },
+        playbackProfiles: [
+            { id: 'study', name: 'Study', sites: ['youtube'], speed: 1.5 }
+        ],
+        activePlaybackProfiles: { youtube: 'study', twitch: 'default' }
+    };
+    const harness = buildHarness(data);
+    await settle();
+    assert.equal(harness.video.playbackRate, 1.5);
+    let applied = 0;
+    harness.on('ytb-apply-playback-profile', () => { applied++; });
+
+    harness.fire('keydown', Object.assign({}, bracketRight));
+    assert.equal(harness.video.playbackRate, 1.75);
+
+    // A volume-boost save (or a hide in another tab) rewrites the record.
+    harness.changeData(Object.assign({}, data, {
+        settings: Object.assign({}, data.settings, { volumeBoost: 2 }),
+        hiddenVideoIds: ['abc']
+    }));
+    await settle();
+    assert.equal(harness.video.playbackRate, 1.75, 'the manual speed survives');
+    assert.equal(applied, 0, 'the profile is not re-run');
+
+    harness.changeData(Object.assign({}, data, {
+        playbackProfiles: [{ id: 'study', name: 'Study', sites: ['youtube'], speed: 1.25 }]
+    }));
+    await settle();
+    assert.equal(harness.video.playbackRate, 1.25, 'editing the profile applies it');
+    assert.equal(applied, 1);
+});
+
+test('speed hotkeys report each change for per-channel memory', async () => {
+    const harness = buildHarness({
+        settings: { enabled: true, ytSpeedHotkeys: true },
+        inputBindings: {
+            youtube: { enabled: true, keyboard: { speedUp: 'BracketRight' }, mouse: {}, wheel: {} }
+        }
+    });
+    await settle();
+    const reports = [];
+    harness.on('ytb-speed-action', event => reports.push(event.detail));
+    harness.fire('keydown', Object.assign({}, bracketRight));
+    assert.equal(reports.length, 1);
+    assert.equal(reports[0].site, 'youtube');
+    assert.equal(reports[0].speed, 1.25);
 });

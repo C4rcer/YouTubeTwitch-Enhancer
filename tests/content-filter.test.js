@@ -157,6 +157,8 @@ function loadContentHarness(watched, options = {}) {
         }
     } : null;
     const watchTitle = options.watchTitle || null;
+    // Optional mini-dom document: answers whatever the stubs below don't.
+    const dom = options.dom || null;
     const playerData = options.playerData || null;
     const flexyData = options.flexyData || null;
     const moviePlayer = playerData ? {
@@ -186,9 +188,9 @@ function loadContentHarness(watched, options = {}) {
                 if (selector.includes('yt-page-header-renderer')) return staleChannelDom.header;
                 if (selector.includes('link[rel="canonical"]')) return staleChannelDom.canonical;
             }
-            return null;
+            return dom ? dom.querySelector(selector) : null;
         },
-        querySelectorAll() { return []; },
+        querySelectorAll(selector) { return dom ? dom.querySelectorAll(selector) : []; },
         getElementById(id) { return id === 'movie_player' ? moviePlayer : null; }
     };
 
@@ -246,6 +248,10 @@ function loadContentHarness(watched, options = {}) {
         isPaidBadgeText,
         processTiles(tiles, force = true) { processTiles(new Set(tiles), force, false); },
         processLegacyMutationFilters,
+        removeShortsSurfaces,
+        getTitleFromNode,
+        deTitleTarget,
+        getState() { return state; },
         prepareDeArrowTitleIdentity,
         applyDeArrowTitle,
         processDeArrowWatchPage,
@@ -286,7 +292,8 @@ function loadContentHarness(watched, options = {}) {
 
     vm.createContext(context);
     vm.runInContext(source, context, { filename: CONTENT_PATH });
-    return Object.assign(context.__YTB_FILTER_TEST__, { channelAttributions });
+    const fire = (type, detail) => (listeners[type] || []).forEach(fn => fn({ type, detail }));
+    return Object.assign(context.__YTB_FILTER_TEST__, { channelAttributions, fire });
 }
 
 function childListRecord(root) {
@@ -1149,4 +1156,123 @@ test('channel video totals parse abbreviated counts and reject foreign header ro
     assert.equal(parse('@gamersnexus • 3.2k videos', 'gamersnexus'), 3200);
     assert.equal(parse('@oldchannel • 514 videos', 'gamersnexus'), null);
     assert.equal(parse('514 videos', 'gamersnexus'), 514);
+});
+
+const { h, createDocument } = require('./mini-dom');
+
+const SIDEBAR_TITLE = "SteamOS, Linux, & Microsoft's Valve-Sized Problem, ft. Wendell of Level1 Techs";
+
+// Watch-sidebar (compact) lockup as rendered live 2026-10: the metadata host's
+// own class contains "lockupMetadataViewModelTitle" (…TitleMaxLines3) and it
+// precedes the real title in document order.
+function sidebarLockup(videoId = 'tfVVngHbb4s') {
+    return h('yt-lockup-view-model', { class: 'lockup' },
+        h('a', { href: '/watch?v=' + videoId, class: 'ytLockupViewModelContentImage' }),
+        h('yt-lockup-metadata-view-model', {
+            class: 'ytLockupMetadataViewModelHost ytLockupMetadataViewModelHorizontal ' +
+                'ytLockupMetadataViewModelTitleMaxLines3 ytLockupMetadataViewModelCompact'
+        },
+        h('div', { class: 'ytLockupMetadataViewModelTextContainer' },
+            h('h3', {
+                class: 'ytLockupMetadataViewModelHeadingReset',
+                title: SIDEBAR_TITLE,
+                'aria-label': SIDEBAR_TITLE
+            },
+            h('a', { href: '/watch?v=' + videoId, class: 'ytLockupMetadataViewModelTitle' },
+                h('span', { class: 'yt-core-attributed-string' }, SIDEBAR_TITLE))),
+            h('div', { class: 'ytLockupMetadataViewModelMetadata' },
+                h('yt-content-metadata-view-model', {},
+                    h('span', { class: 'ytContentMetadataViewModelMetadataText' }, 'Gamers Nexus'),
+                    h('span', { class: 'ytContentMetadataViewModelMetadataText' }, '912K views'),
+                    h('span', { class: 'ytContentMetadataViewModelMetadataText' }, '4 days ago'))))));
+}
+
+test('compact sidebar lockups yield the title, not the whole metadata block', () => {
+    const api = loadContentHarness(new Set());
+    const lockup = sidebarLockup();
+
+    assert.equal(api.getTitleFromNode(lockup), SIDEBAR_TITLE);
+    const target = api.deTitleTarget(lockup);
+    assert.equal(target.localName, 'a');
+    assert.equal(target.className, 'ytLockupMetadataViewModelTitle',
+        'DeArrow must write to the title link, not the metadata host');
+
+    // A keyword that only appears in the byline must not hide the video;
+    // one from the title still does.
+    api.configure({ settings: { enabled: true }, blockedKeywords: ['nexus'] });
+    api.processTiles([lockup]);
+    assert.equal(lockup.classList.contains('ytb-removed'), false);
+
+    const other = sidebarLockup('otherVideo01');
+    api.configure({ settings: { enabled: true }, blockedKeywords: ['valve'] });
+    api.processTiles([other]);
+    assert.equal(other.dataset.ytbFilterReason, 'blocked-keyword');
+});
+
+// Search-results Shorts shelf as rendered live 2026-10.
+function searchShortsShelf() {
+    return h('grid-shelf-view-model', {},
+        h('yt-section-header-view-model', {},
+            h('yt-shelf-header-layout', {}, h('h2', {}, 'Shorts'))),
+        h('div', { class: 'ytGridShelfViewModelGridShelfRow' },
+            h('ytm-shorts-lockup-view-model-v2', {},
+                h('ytm-shorts-lockup-view-model', {},
+                    h('a', { href: '/shorts/shortvideo1' }))),
+            h('ytm-shorts-lockup-view-model-v2', {},
+                h('ytm-shorts-lockup-view-model', {},
+                    h('a', { href: '/shorts/shortvideo2' })))),
+        h('button-view-model', {}, h('button', {}, 'Show more')));
+}
+
+test('search-results Shorts shelves hide whole, header and Show more included', () => {
+    const shelf = searchShortsShelf();
+    const plainShelf = h('grid-shelf-view-model', {},
+        h('yt-section-header-view-model', {}, h('h2', {}, 'Latest from Example')),
+        h('ytd-video-renderer', {}, h('a', { href: '/watch?v=regular0001' })));
+    const section = h('ytd-item-section-renderer', {}, h('div', { id: 'contents' }, shelf, plainShelf));
+    const dom = createDocument(h('ytd-search', {}, section));
+
+    const api = loadContentHarness(new Set(), { dom });
+    api.configure({ settings: { enabled: true, blockShorts: true } });
+
+    // Pre-paint pass: the shelf is inserted, then its lockups render into it.
+    const lockups = shelf.children[1];
+    lockups.remove();
+    api.processLegacyMutationFilters([{
+        type: 'childList', target: section, addedNodes: [shelf], removedNodes: []
+    }]);
+    assert.equal(shelf.classList.contains('ytb-removed'), false,
+        'an empty grid shelf is not known to be Shorts yet');
+    shelf.insertBefore(lockups, shelf.children[1]);
+    api.processLegacyMutationFilters([{
+        type: 'childList', target: shelf, addedNodes: [lockups], removedNodes: []
+    }]);
+    assert.equal(shelf.classList.contains('ytb-removed'), true);
+    assert.equal(plainShelf.classList.contains('ytb-removed'), false);
+
+    // Maintenance pass over the whole page.
+    shelf.classList.remove('ytb-removed');
+    api.removeShortsSurfaces();
+    assert.equal(shelf.classList.contains('ytb-removed'), true);
+    assert.equal(plainShelf.classList.contains('ytb-removed'), false,
+        'a grid shelf without Shorts stays');
+});
+
+test('shared speed hotkeys feed the per-channel speed memory', () => {
+    const owner = h('ytd-video-owner-renderer', {},
+        h('a', { href: '/@gamersnexus' }, 'Gamers Nexus'));
+    const api = loadContentHarness(new Set(), { dom: createDocument(owner) });
+    api.configure({ settings: { enabled: true, ytSpeedPerChannel: true } });
+    api.setPath('/watch?v=tfVVngHbb4s');
+
+    api.fire('ytb-speed-action', { site: 'youtube', speed: 1.75 });
+    assert.equal(api.getState().ytChannelSpeeds['@gamersnexus'], 1.75);
+
+    api.fire('ytb-speed-action', { site: 'twitch', speed: 2 });
+    assert.equal(api.getState().ytChannelSpeeds['@gamersnexus'], 1.75,
+        'Twitch speed changes are not YouTube channel speeds');
+
+    api.fire('ytb-speed-action', { site: 'youtube', speed: 1 });
+    assert.equal('@gamersnexus' in api.getState().ytChannelSpeeds, false,
+        'returning to 1x forgets the channel speed');
 });

@@ -24,6 +24,7 @@
     let osdTimer = null;
     let lastUrl = location.href;
     let profileApplying = false;
+    let profileFieldsSignature = null;
 
     document.dispatchEvent(new CustomEvent(TAKEOVER_EVENT, { detail: INSTANCE_ID }));
 
@@ -153,6 +154,10 @@
         const speed = Math.min(8, Math.max(0.1, Math.round(value * 100) / 100));
         video.playbackRate = speed;
         showOsd('Speed ' + speed + '×');
+        // The YouTube content script owns the per-channel speed memory.
+        document.dispatchEvent(new CustomEvent('ytb-speed-action', {
+            detail: { site: SITE, speed }
+        }));
         return true;
     }
 
@@ -416,11 +421,25 @@
         }
     }
 
+    // Only the playback-profile fields re-run the profile. Every other write to
+    // the shared record (a volume-wheel save, a hide in another tab, Twitch
+    // diagnostics) must leave a manual speed, caption or compressor change alone.
+    function profileFields(data) {
+        return JSON.stringify([
+            data.playbackProfiles,
+            data.activePlaybackProfiles,
+            data.channelPlaybackProfiles
+        ]);
+    }
+
     function loadData(value) {
         rawData = value && typeof value === 'object' ? value : {};
         settings = rawData.settings && typeof rawData.settings === 'object'
             ? rawData.settings : {};
         featureData = YTBFeatures.normalizeFeatureData(rawData);
+        const fields = profileFields(featureData);
+        if (fields === profileFieldsSignature) return;
+        profileFieldsSignature = fields;
         currentMediaSignature = '';
         scheduleProfile(true);
     }
