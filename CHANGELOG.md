@@ -1,5 +1,25 @@
 # Changelog
 
+## 4.8.6 — 2026-10-29
+
+### Fixed
+
+- YouTube search left an empty "Shorts" heading and a "Show more" button where each Shorts shelf had been. Search results now group Shorts in a generic `grid-shelf-view-model`, and only the Shorts inside it were hidden. A grid shelf that holds Shorts is now hidden whole, both before it paints and in the maintenance pass; grid shelves without Shorts stay.
+- Blocked keywords matched channel names, view counts and upload ages on watch-page sidebar videos. On the compact lockups there, the metadata container's own class contains `lockupMetadataViewModelTitle` and comes first in document order, so the title lookup read the whole block ("…Level1 TechsGamers Nexus912K views4 days ago"). A keyword like "nexus" hid every video from that channel, and saved hidden-video titles were polluted the same way. The title is now looked up in priority tiers (classic renderers, the lockup heading's `title`, the title link, then any heading), and DeArrow's title target uses the same tiers.
+- Third-party Twitch emotes could take minutes to appear, because one provider that never answered held back all of them. During testing, api.frankerfacez.com accepted connections and then hung for over 45 seconds while BTTV answered in 63 ms. Each lookup now gives up after 8 seconds, all six run at once, and each provider's emotes appear as soon as it answers, including in chat lines that already show another provider's emotes. Channel emotes still win over same-named globals, now in a fixed BTTV, 7TV, FFZ order.
+- The drops auto-claim tab could close before claiming anything. Its 6-second close timer started on the script's first pass, before Twitch had rendered the inventory, so on a slow load nothing was claimed and the stream tab waited 15 minutes to try again. The tab now closes 6 seconds after its last claim, or after 30 seconds with nothing to claim (60 seconds at most), and never closes a tab you have switched to.
+- Drop auto-claim only worked with Twitch in English. The inventory's "Claim Now" button has no stable attributes, so it is matched by its label, which is now recognised in every language Twitch's UI offers, using the strings from Twitch's own locale bundles. Translations of the bare word "Claim" are left out on purpose: in several languages Twitch uses the same word for "Redeem" or "Download". A dead styled-components class selector was removed.
+- Playback profiles re-applied on every save to the extension's data, undoing manual changes. Pressing **]** and then scrolling the volume wheel snapped the speed back to the profile's speed half a second later. Hiding a video in another tab, changing an unrelated option, or a Twitch diagnostics update did the same, and also flipped caption and compressor toggles back. Profiles now re-apply only when a profile, the active profile or a channel rule changes. A profile's YouTube volume boost, which had only survived those saves because of the re-apply, is now kept for the session on its own.
+- "Remember speed per channel" had stopped recording new speeds since 4.8.0. The configurable shortcuts, on by default, replaced the old **[** / **]** / **\\** handler, which was the only code that saved the speed. The shortcut handler now reports each speed change, and it is saved for the channel as before.
+- DeArrow could show a replacement title after the community had voted for the original. The lookup took the first non-original submission, while DeArrow itself uses only the top-ranked one and keeps the original when that is the original or was voted down. Titles and thumbnails now follow DeArrow's rule.
+- Right-click menu entries were missing after disabling and re-enabling the add-on, until the next browser restart. They are now built whenever the background page starts.
+- Firefox Sync could fail for block lists with non-Latin names. Chunks were cut at 6,000 characters, but Firefox's 8,192-byte item limit counts the UTF-8 bytes of the stored JSON, where quotes take two bytes and CJK characters three, and a cut could split an emoji in half. Chunks are now cut by that byte measure and never inside a character.
+
+### Validation
+
+- Live-checked 2026-10-28 on youtube.com and twitch.tv, signed out: the search Shorts shelf (`grid-shelf-view-model` inside `ytd-item-section-renderer`), the compact sidebar lockup classes, and the FFZ hang. The claim labels come from all 30 Twitch locale bundles, and a script confirmed the list in `twitch.js` matches them exactly. The drops inventory needs a signed-in account, so the claim timing and labels are covered by tests rather than a live claim.
+- New `tests/twitch.test.js` and `tests/background.test.js`, plus `tests/mini-dom.js`, a small DOM with a real selector engine for tests that depend on document order. Each new regression test fails against 4.8.5 and passes now. Full suite passes 108/108.
+
 ## 4.8.5 — 2026-07-22
 
 ### Fixed
