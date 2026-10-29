@@ -102,6 +102,9 @@
         settings: Object.assign({}, DEFAULT_SETTINGS)
     };
     let settings = Object.assign({}, DEFAULT_SETTINGS);
+    // A playback profile's volume boost: session-scoped, so it outlives storage
+    // reloads of `settings` but is never saved (see onPlaybackProfile).
+    let profileVolumeBoost = null;
     let sharedInputActionsEnabled = false;
     let hiddenSet = new Set();
     let keywordMatchers = [];   // compiled from state.blockedKeywords
@@ -513,6 +516,7 @@
             if (c.name) sbWhitelistIndex.names.add(c.name.toLowerCase().trim());
         }
         settings = Object.assign({}, DEFAULT_SETTINGS, state.settings);
+        if (profileVolumeBoost != null) settings.volumeBoost = profileVolumeBoost;
         sharedInputActionsEnabled = typeof YTBFeatures !== 'undefined' &&
             YTBFeatures.normalizeInputBindings(state.inputBindings).youtube.enabled;
         compileKeywords();
@@ -3863,6 +3867,7 @@
         mult = Math.min(5, Math.max(1, mult));
         state.settings.volumeBoost = mult;
         settings.volumeBoost = mult;
+        profileVolumeBoost = null;   // a manual change replaces the profile's
         if (mult > 1) ensureBoostGraph();
         applyVolumeBoost();
         // Debounce persistence — wheel scrolling fires many times.
@@ -4044,6 +4049,7 @@
             ? Number(state.settings.volumeBoost || 1) : Number(profileBoost);
         if (!Number.isFinite(boost)) return;
         settings.volumeBoost = Math.min(5, Math.max(1, boost));
+        profileVolumeBoost = profileBoost == null ? null : settings.volumeBoost;
         const video = playerVideo();
         if (video && settings.volumeBoost > 1) {
             video.volume = 1;
