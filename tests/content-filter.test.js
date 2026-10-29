@@ -252,6 +252,9 @@ function loadContentHarness(watched, options = {}) {
         getTitleFromNode,
         deTitleTarget,
         getState() { return state; },
+        getSettings() { return settings; },
+        rebuildDerived,
+        setVolumeBoost,
         prepareDeArrowTitleIdentity,
         applyDeArrowTitle,
         processDeArrowWatchPage,
@@ -1275,4 +1278,31 @@ test('shared speed hotkeys feed the per-channel speed memory', () => {
     api.fire('ytb-speed-action', { site: 'youtube', speed: 1 });
     assert.equal('@gamersnexus' in api.getState().ytChannelSpeeds, false,
         'returning to 1x forgets the channel speed');
+});
+
+test('a profile volume boost survives storage reloads until changed by hand', () => {
+    const api = loadContentHarness(new Set());
+    // No style-injecting features: the stub document cannot build <style>.
+    api.configure({ settings: {
+        enabled: true, volumeBoost: 1,
+        blockShorts: false, hideSidebarSpinner: false, hideEndScreen: false
+    } });
+
+    api.fire('ytb-apply-playback-profile', { site: 'youtube', speed: 1.5, volumeBoost: 2 });
+    assert.equal(api.getSettings().volumeBoost, 2);
+
+    // Any write to the shared record reloads settings from storage, where the
+    // base boost is still 1x: the session-scoped profile boost must hold.
+    api.rebuildDerived();
+    assert.equal(api.getSettings().volumeBoost, 2);
+    assert.equal(api.getState().settings.volumeBoost, 1, 'the profile boost is never saved');
+
+    api.setVolumeBoost(1);
+    api.rebuildDerived();
+    assert.equal(api.getSettings().volumeBoost, 1, 'a manual change replaces the profile boost');
+
+    api.fire('ytb-apply-playback-profile', { site: 'youtube', speed: 1.5, volumeBoost: 3 });
+    api.fire('ytb-apply-playback-profile', { site: 'youtube', speed: 1.5, volumeBoost: null });
+    api.rebuildDerived();
+    assert.equal(api.getSettings().volumeBoost, 1, 'a profile without a boost uses the base');
 });
