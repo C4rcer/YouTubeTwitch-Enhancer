@@ -13,8 +13,8 @@ const read = name => fs.readFileSync(path.join(__dirname, '..', 'src', name), 'u
 // background) against fake browser APIs. Nothing fires onInstalled/onStartup
 // unless a test does, which is what a re-enabled add-on sees.
 function loadBackground(options = {}) {
-    const local = { data: options.data };
-    const syncStore = {};
+    const local = Object.assign({ data: options.data }, options.local);
+    const syncStore = Object.assign({}, options.sync);
     const syncWrites = [];
     const menus = { removeAll: 0, created: [] };
     const listeners = { installed: [], startup: [], message: [] };
@@ -49,8 +49,11 @@ function loadBackground(options = {}) {
             tabs: { create: async () => ({}), remove: async () => {}, sendMessage: async () => {} },
             storage: {
                 local: {
-                    async get(key) { return typeof key === 'string' ? { [key]: local[key] } : {}; },
-                    async set(value) { Object.assign(local, value); }
+                    async get(keys) {
+                        const list = typeof keys === 'string' ? [keys] : keys;
+                        return Object.fromEntries(list.map(key => [key, structuredClone(local[key])]));
+                    },
+                    async set(value) { Object.assign(local, structuredClone(value)); }
                 },
                 sync: {
                     async get(keys) {
@@ -72,7 +75,7 @@ function loadBackground(options = {}) {
     vm.createContext(context);
     vm.runInContext(read('feature-core.js') + '\n' + read('common.js') + '\n' + read('background.js'), context);
     const message = msg => listeners.message[0](msg, {});
-    return { menus, listeners, syncWrites, message };
+    return { menus, listeners, syncWrites, message, local, syncStore };
 }
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
@@ -166,4 +169,43 @@ test('sync chunks stay inside the per-item quota for non-Latin lists', async () 
     const lists = JSON.parse(joined);
     assert.equal(lists.blockedChannels.length, 300);
     assert.equal(lists.blockedChannels[7].name, channels[7].name);
+});
+
+test('startup moves old in-record copies into their own keys', async () => {
+    const bg = loadBackground({
+        data: {
+            settings: {},
+            hiddenVideoIds: ['legacyVid01'],
+            hiddenVideoMetadata: { legacyVid01: { title: 'Legacy title', addedAt: 1 } },
+            recentActions: [{ id: 'old', type: 'settings-change', label: 'Old', at: 1 }]
+        },
+        local: {
+            ytbRecentActions: [{ id: 'new', type: 'settings-change', label: 'New', at: 2 }]
+        }
+    });
+    await flush();
+    await flush();
+
+    assert.equal('hiddenVideoMetadata' in bg.local.data, false);
+    assert.equal('recentActions' in bg.local.data, false);
+    assert.deepEqual(bg.local.data.hiddenVideoIds, ['legacyVid01'], 'the rest of the record stays');
+    assert.equal(bg.local.ytbHiddenVideoMeta.legacyVid01.title, 'Legacy title');
+    assert.deepEqual(bg.local.ytbRecentActions.map(action => action.id), ['new', 'old'],
+        'merged with entries already in the key');
+});
+
+test('sync rewrites of data add no empty placeholders back', async () => {
+    const bg = loadBackground({
+        data: { settings: { syncBlockLists: true }, blockedKeywords: ['local'] },
+        sync: {
+            ytbSyncMeta: { chunks: 1, updatedAt: 1 },
+            ytbSyncChunk0: JSON.stringify({ blockedKeywords: ['remote'] })
+        }
+    });
+    await flush();
+    await flush();
+
+    assert.deepEqual([...bg.local.data.blockedKeywords].sort(), ['local', 'remote']);
+    assert.equal('recentActions' in bg.local.data, false);
+    assert.equal('hiddenVideoMetadata' in bg.local.data, false);
 });

@@ -118,6 +118,7 @@ host permissions:
   recent destructive actions with bounded undo, import preview with selective
   merge/replace, and an automatic backup before reset. Lists over 500 rows are
   sorted and paged instead of rendering without a bound.
+
 ## Community data integrations (v4.3, all off by default)
 
 Three opt-in YouTube features backed by free community-run services, replacing
@@ -327,8 +328,8 @@ JSON/CSV round trips and filtering, Twitch recovery/quality/live-delay helpers,
 600-card dirty-subtree processing and recycled sidebar identities, overlay and
 diagnostics normalization, settings import/undo helpers, and popup ARIA/keyboard
 relationships. JavaScript syntax, `manifest.json`, referenced assets, and
-`git diff --check` are part of release verification in
-[`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md).
+`git diff --check` are also checked before each release.
+
 ## Usage
 
 ### Block a channel
@@ -406,14 +407,18 @@ request.
 
 ## Local data, permissions, and DOM resilience
 
-New data stays in the existing local `data` record:
+New data stays in the existing local `data` record, except for the two
+largest, rarely read records, which have their own keys so that frequent
+saves stay small:
 
 - `inputBindings`, `playbackProfiles`, `activePlaybackProfiles`, and
   `channelPlaybackProfiles` hold shared controls and profile assignments.
 - `ytCollections` and `twitchSidebar` hold bounded local organisation data.
-- `settingsPresets`, `recentActions`, and `hiddenVideoMetadata` hold bounded
-  settings snapshots, reversible list changes, and metadata for newly hidden
-  videos. Old ID-only hidden-video records remain valid.
+- `settingsPresets` holds bounded settings snapshots.
+- `ytbRecentActions` (reversible list changes) and `ytbHiddenVideoMeta`
+  (title, channel and thumbnail of newly hidden videos) are bounded and stored
+  outside `data` since 4.8.7; older copies inside `data` are moved there once.
+  Old ID-only hidden-video records remain valid.
 - `twitchPlayer`, `twitchChatOverlay`, and `twitchDiagnostics` contain bounded
   preferences and redacted recovery state. Diagnostics never contain URLs,
   channel/video identities, titles, transcript/chat text, or tokens.
@@ -436,6 +441,7 @@ fallback is scoped to the relevant card/callout/player/chat container. If Twitch
 localises or removes it, that optional enhancement fails closed (the item stays
 visible, is not clicked, or is not restored); native Twitch behaviour continues.
 Player recovery itself does not classify errors by translated text.
+
 ## How it works
 
 - **`src/content.js`** runs at `document_start`. A static startup gate keeps
@@ -476,12 +482,14 @@ Player recovery itself does not classify errors by translated text.
   redacted recovery state.
 - **`src/player-controls.js`** supplies the common input-action and playback
   profile runtime on both sites. **`src/youtube-workspace.js`** supplies the
-  rendered-transcript/chapter dock and local subscription collections.- **`src/background.js`** registers the right-click menu, opens the onboarding
+  rendered-transcript/chapter dock and local subscription collections.
+- **`src/background.js`** registers the right-click menu, opens the onboarding
   page on first install, and mirrors block lists to Firefox Sync (chunked to
   fit `storage.sync` quotas) when enabled.
 - **`src/popup.*`** and **`src/options.*`** share storage helpers in
-  **`src/common.js`**; state lives under one `data` key and syncs across
-  contexts via `storage.onChanged`.
+  **`src/common.js`**; state lives under one `data` key (with hidden-video
+  details and undo history in their own keys) and syncs across contexts via
+  `storage.onChanged`.
 - Content-script instances are tagged with a per-load id and hand over via a
   takeover event, so in-place add-on updates never leave orphaned handlers
   fighting the new version.

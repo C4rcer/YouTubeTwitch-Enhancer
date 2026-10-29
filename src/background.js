@@ -9,7 +9,7 @@
  *
  * Loaded together with common.js (YTB helpers) — see manifest.json.
  * ================================================================== */
-/* global YTB */
+/* global YTB, YTBFeatures */
 (function () {
     'use strict';
 
@@ -403,6 +403,19 @@
         return YTB.normalize(r.data);
     }
 
+    // The sync mirror only rewrites the lists. The hidden-video details and
+    // undo history live in their own keys, so drop the empty placeholders
+    // normalize() adds, but keep a copy an older version left inside `data`
+    // for the migration below.
+    function dataOnly(record) {
+        const out = Object.assign({}, record);
+        if (!out.recentActions || !out.recentActions.length) delete out.recentActions;
+        if (!out.hiddenVideoMetadata || !Object.keys(out.hiddenVideoMetadata).length) {
+            delete out.hiddenVideoMetadata;
+        }
+        return out;
+    }
+
     async function setSyncStatus(s) {
         try { await api.storage.local.set({ ytbSyncStatus: s }); } catch (e) { /* ignore */ }
     }
@@ -501,7 +514,7 @@
         const str = listsOf(merged);
         if (str !== listsOf(local)) {
             lastAppliedStr = str;
-            await api.storage.local.set({ data: merged });
+            await api.storage.local.set({ data: dataOnly(merged) });
         }
         await pushSync(str);
     }
@@ -522,7 +535,7 @@
         next.twitchSidebar = inc.twitchSidebar;
         for (const f of SIMPLE_LIST_FIELDS) next[f] = inc[f];
         lastAppliedStr = listsOf(next);
-        await api.storage.local.set({ data: next });
+        await api.storage.local.set({ data: dataOnly(next) });
         await setSyncStatus({ ok: true, at: Date.now() });
     }
 
@@ -547,8 +560,34 @@
         }
     });
 
-    // On browser startup, reconcile with whatever sync has.
+    /* ---------------- Storage layout ----------------
+     * 4.8.7 moved the hidden-video details and the undo history out of
+     * `data` into their own keys (see feature-core.js). Readers join both
+     * places and every writer of those keys folds the old copy in, but the
+     * copy left inside `data` would still be resent to every tab on each
+     * `data` write until something touched it, so move it once here.
+     * ------------------------------------------------ */
+    async function migrateSplitRecords() {
+        const metaKey = YTBFeatures.HIDDEN_VIDEO_META_KEY;
+        const historyKey = YTBFeatures.RECENT_ACTIONS_KEY;
+        const r = await api.storage.local.get(['data', metaKey, historyKey]);
+        const data = r.data;
+        if (!data || typeof data !== 'object' ||
+            !('hiddenVideoMetadata' in data || 'recentActions' in data)) return;
+        const next = Object.assign({}, data);
+        delete next.hiddenVideoMetadata;
+        delete next.recentActions;
+        await api.storage.local.set({
+            data: next,
+            [metaKey]: YTBFeatures.mergeHiddenVideoMetadata(data.hiddenVideoMetadata, r[metaKey]),
+            [historyKey]: YTBFeatures.mergeRecentActions(data.recentActions, r[historyKey])
+        });
+    }
+
+    // On browser startup: migrate first (both rewrite `data`), then reconcile
+    // with whatever sync has.
     (async () => {
+        try { await migrateSplitRecords(); } catch (e) { /* retried on the next start */ }
         try {
             const local = await getLocal();
             if (local.settings.syncBlockLists) await initialMerge();

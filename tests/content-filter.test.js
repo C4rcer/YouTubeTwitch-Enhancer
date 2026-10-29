@@ -211,10 +211,25 @@ function loadContentHarness(watched, options = {}) {
         removeHidden() {}
     };
     const noopListener = { addListener() {} };
+    // Optional storage.local: each call settles a tick later, so two saves
+    // that are not serialized would interleave their reads and writes.
+    const storage = options.storage || null;
+    const local = storage ? {
+        async get(keys) {
+            await null;
+            const list = typeof keys === 'string' ? [keys] : keys;
+            return Object.fromEntries(list.map(key => [key, structuredClone(storage.values[key])]));
+        },
+        async set(items) {
+            await null;
+            storage.writes.push(Object.keys(items));
+            Object.assign(storage.values, structuredClone(items));
+        }
+    } : undefined;
     const context = {
         browser: {
             runtime: { onMessage: noopListener },
-            storage: { onChanged: noopListener }
+            storage: { onChanged: noopListener, local }
         },
         document,
         location: {
@@ -236,7 +251,8 @@ function loadContentHarness(watched, options = {}) {
         clearInterval() {},
         requestAnimationFrame() {},
         confirm: () => true,
-        YTBWatchedDB: watchedDb
+        YTBWatchedDB: watchedDb,
+        YTBFeatures: storage ? require('../src/feature-core.js') : undefined
     };
     context.self = context;
     context.window = context;
@@ -255,6 +271,14 @@ function loadContentHarness(watched, options = {}) {
         getSettings() { return settings; },
         rebuildDerived,
         setVolumeBoost,
+        rememberHiddenVideo,
+        saveOnly,
+        spyRunAll() {
+            let calls = 0;
+            runAll = () => { calls++; };
+            return () => calls;
+        },
+        isPendingWhileHidden() { return pendingWhileHidden; },
         prepareDeArrowTitleIdentity,
         applyDeArrowTitle,
         processDeArrowWatchPage,
@@ -296,7 +320,8 @@ function loadContentHarness(watched, options = {}) {
     vm.createContext(context);
     vm.runInContext(source, context, { filename: CONTENT_PATH });
     const fire = (type, detail) => (listeners[type] || []).forEach(fn => fn({ type, detail }));
-    return Object.assign(context.__YTB_FILTER_TEST__, { channelAttributions, fire });
+    const setHidden = value => { document.hidden = value; };
+    return Object.assign(context.__YTB_FILTER_TEST__, { channelAttributions, fire, setHidden });
 }
 
 function childListRecord(root) {
@@ -1305,4 +1330,82 @@ test('a profile volume boost survives storage reloads until changed by hand', ()
     api.fire('ytb-apply-playback-profile', { site: 'youtube', speed: 1.5, volumeBoost: null });
     api.rebuildDerived();
     assert.equal(api.getSettings().volumeBoost, 1, 'a profile without a boost uses the base');
+});
+
+test('hidden-video details go to their own key, folded with an old in-record copy', async () => {
+    const storage = {
+        values: {
+            data: {
+                settings: { enabled: true },
+                hiddenVideoIds: ['legacyVid01'],
+                hiddenVideoMetadata: {
+                    legacyVid01: { title: 'Legacy title', channel: '', thumbnail: '', addedAt: 1 }
+                }
+            }
+        },
+        writes: []
+    };
+    const api = loadContentHarness(new Set(), { storage });
+    api.configure(storage.values.data);
+
+    // Two hides saved back to back. Each save reads the stored record first,
+    // so the two must not interleave and drop each other's details.
+    api.rememberHiddenVideo('firstVid001', sidebarLockup('firstVid001'), { name: 'Gamers Nexus' });
+    const first = api.saveOnly();
+    api.rememberHiddenVideo('secondVid01', sidebarLockup('secondVid01'), { name: 'Gamers Nexus' });
+    await Promise.all([first, api.saveOnly()]);
+
+    const meta = storage.values.ytbHiddenVideoMeta;
+    assert.deepEqual(Object.keys(meta).sort(), ['firstVid001', 'legacyVid01', 'secondVid01']);
+    assert.equal(meta.firstVid001.title, SIDEBAR_TITLE);
+    assert.equal(meta.firstVid001.channel, 'Gamers Nexus');
+    assert.equal(meta.legacyVid01.title, 'Legacy title');
+    assert.equal('hiddenVideoMetadata' in storage.values.data, false, 'the old copy left `data`');
+
+    // A save with no new details (a volume change, say) leaves the key alone.
+    await api.saveOnly();
+    assert.deepEqual(storage.writes.at(-1), ['data']);
+});
+
+test('caption updates inside the player do not queue a full page pass', () => {
+    const api = loadContentHarness(new Set());
+    const segment = h('span', { class: 'ytp-caption-segment' }, 'Hello');
+    const player = h('div', { id: 'movie_player' },
+        h('div', { class: 'ytp-caption-window-container' },
+            h('div', { class: 'caption-window' },
+                h('span', { class: 'captions-text' }, segment))));
+    createDocument(player);
+    const line = segment.parentElement;
+    assert.equal(api.mutationNeedsMaintenance([{
+        type: 'childList', target: line, addedNodes: [segment], removedNodes: []
+    }]), false);
+    const replaced = h('span', { class: 'ytp-caption-segment' }, 'Earlier line');
+    assert.equal(api.mutationNeedsMaintenance([{
+        type: 'childList', target: line, addedNodes: [], removedNodes: [replaced]
+    }]), false);
+
+    // End-screen suggestions inside the same player still get the page pass,
+    // which hides blocked channels there.
+    const endscreen = h('div', { class: 'html5-endscreen' });
+    player.appendChild(endscreen);
+    const still = h('a', { class: 'ytp-videowall-still', href: '/watch?v=endscreen01' });
+    endscreen.appendChild(still);
+    assert.equal(api.mutationNeedsMaintenance([{
+        type: 'childList', target: endscreen, addedNodes: [still], removedNodes: []
+    }]), true);
+});
+
+test('watched-history changes in a hidden tab wait until it is shown', () => {
+    const api = loadContentHarness(new Set());
+    api.configure({ settings: { enabled: true } });
+    const runAllCalls = api.spyRunAll();
+
+    api.setHidden(true);
+    api.fire('ytb-watched-db-change');
+    assert.equal(runAllCalls(), 0);
+    assert.equal(api.isPendingWhileHidden(), true, 'the visibility handler catches up later');
+
+    api.setHidden(false);
+    api.fire('ytb-watched-db-change');
+    assert.equal(runAllCalls(), 1);
 });

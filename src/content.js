@@ -92,7 +92,6 @@
     /* ---- live state ------------------------------------------------ */
     let state = {
         hiddenVideoIds: [],
-        hiddenVideoMetadata: {},
         blockedChannels: [],
         blockedKeywords: [],
         ytCommentKeywords: [],
@@ -105,6 +104,11 @@
     // A playback profile's volume boost: session-scoped, so it outlives storage
     // reloads of `settings` but is never saved (see onPlaybackProfile).
     let profileVolumeBoost = null;
+    // Hidden-video details (title, channel, thumbnail for the options page)
+    // live in their own storage key and are never read here, so changes queue
+    // up and the next saveOnly() applies them to the stored copy.
+    let pendingHiddenMeta = new Map();   // video id -> details, or null to forget
+    let clearHiddenMeta = false;
     let sharedInputActionsEnabled = false;
     let hiddenSet = new Set();
     let keywordMatchers = [];   // compiled from state.blockedKeywords
@@ -455,10 +459,6 @@
         d = d || {};
         return {
             hiddenVideoIds: Array.isArray(d.hiddenVideoIds) ? [...new Set(d.hiddenVideoIds)] : [],
-            hiddenVideoMetadata: (d.hiddenVideoMetadata && typeof d.hiddenVideoMetadata === 'object' &&
-                                  !Array.isArray(d.hiddenVideoMetadata))
-                ? Object.fromEntries(Object.entries(d.hiddenVideoMetadata).slice(0, 2000))
-                : {},
             blockedChannels: Array.isArray(d.blockedChannels)
                 ? d.blockedChannels.filter(c => c && (c.handle || c.channelId || c.name))
                 : [],
@@ -583,22 +583,52 @@
     // Persist without re-running the full pass (used by enrichment inside
     // runAll). Load-merge-save: this script only owns the YouTube fields, so
     // pull the full record first rather than clobbering the Twitch lists.
-    async function saveOnly() {
+    // Writes run one at a time: each loads the stored record first, so two at
+    // once could drop each other's queued hidden-video details.
+    let saveChain = Promise.resolve();
+    function saveOnly() {
+        saveChain = saveChain.then(writeState);
+        return saveChain;
+    }
+
+    async function writeState() {
         if (retired) return;
+        const metaOps = pendingHiddenMeta;
+        const metaClear = clearHiddenMeta;
+        const metaKey = typeof YTBFeatures !== 'undefined' ? YTBFeatures.HIDDEN_VIDEO_META_KEY : '';
+        const writeMeta = !!metaKey && (metaClear || metaOps.size > 0);
+        pendingHiddenMeta = new Map();
+        clearHiddenMeta = false;
         try {
-            const stored = await api.storage.local.get(STORAGE_KEY);
+            const stored = await api.storage.local.get(writeMeta ? [STORAGE_KEY, metaKey] : STORAGE_KEY);
             const full = stored[STORAGE_KEY] || {};
             full.hiddenVideoIds = state.hiddenVideoIds;
-            full.hiddenVideoMetadata = state.hiddenVideoMetadata;
             full.blockedChannels = state.blockedChannels;
             full.blockedKeywords = state.blockedKeywords;
             full.ytCommentKeywords = state.ytCommentKeywords;
             full.ytChannelSpeeds = state.ytChannelSpeeds;
             full.sbWhitelist = state.sbWhitelist;
             full.settings = Object.assign({}, full.settings, state.settings);
+            const items = { [STORAGE_KEY]: full };
+            if (writeMeta) {
+                // Fold in any copy an older version left inside `data`.
+                const meta = metaClear ? {} : YTBFeatures.mergeHiddenVideoMetadata(
+                    full.hiddenVideoMetadata, stored[metaKey]);
+                delete full.hiddenVideoMetadata;
+                for (const [id, details] of metaOps) {
+                    if (details) meta[id] = details;
+                    else delete meta[id];
+                }
+                items[metaKey] = YTBFeatures.mergeHiddenVideoMetadata(meta);
+            }
             lastSerialized = JSON.stringify(normalize(full));
-            await api.storage.local.set({ [STORAGE_KEY]: full });
+            await api.storage.local.set(items);
         } catch (e) {
+            // Put the detail changes back; anything queued since is newer.
+            for (const [id, details] of metaOps) {
+                if (!pendingHiddenMeta.has(id)) pendingHiddenMeta.set(id, details);
+            }
+            if (metaClear) clearHiddenMeta = true;
             console.warn('[YT Blocker] Could not persist:', e);
         }
     }
@@ -3298,22 +3328,18 @@
         if (!id) return;
         const image = node && node.querySelector &&
             node.querySelector('img[src], img[data-thumb], yt-image img');
-        state.hiddenVideoMetadata[id] = {
+        // Bounded to the newest 2000 when written (see writeState).
+        pendingHiddenMeta.set(id, {
             title: node ? getTitleFromNode(node) : '',
             channel: channel && (channel.name || channel.handle || channel.channelId) || '',
             thumbnail: image && (image.currentSrc || image.src) || '',
             addedAt: Date.now()
-        };
-        const entries = Object.entries(state.hiddenVideoMetadata);
-        if (entries.length > 2000) {
-            entries.sort((a, b) => (b[1].addedAt || 0) - (a[1].addedAt || 0));
-            state.hiddenVideoMetadata = Object.fromEntries(entries.slice(0, 2000));
-        }
+        });
     }
     function undoHideVideo(id) {
         const i = state.hiddenVideoIds.indexOf(id);
         if (i >= 0) state.hiddenVideoIds.splice(i, 1);
-        delete state.hiddenVideoMetadata[id];
+        pendingHiddenMeta.set(id, null);
         // Drop it from the per-channel "Hidden" tally too (hiding and watching
         // are tracked separately, so this never touches the watched database).
         if (WatchedDB) WatchedDB.removeHidden(id);
@@ -4590,8 +4616,13 @@
 
     // watched-db.js emits after cross-tab additions/removals and generation
     // resets. Its revision joins the cache key so existing cards reconcile.
+    // A hidden tab catches up once it is shown (see bootObserver) instead of
+    // re-running the full pass for every video watched in another tab.
+    let pendingWhileHidden = false;
     document.addEventListener('ytb-watched-db-change', () => {
-        if (!retired && settings.enabled) runAll();
+        if (retired || !settings.enabled) return;
+        if (document.hidden) pendingWhileHidden = true;
+        else runAll();
     });
 
     /* ==================================================================
@@ -4603,14 +4634,15 @@
         const i = state.hiddenVideoIds.indexOf(id);
         if (i < 0) return false;
         state.hiddenVideoIds.splice(i, 1);
-        delete state.hiddenVideoMetadata[id];
+        pendingHiddenMeta.set(id, null);
         persist();
         return true;
     };
     window.ytsbResetHidden = () => {
         const n = state.hiddenVideoIds.length;
         state.hiddenVideoIds = [];
-        state.hiddenVideoMetadata = {};
+        pendingHiddenMeta = new Map();
+        clearHiddenMeta = true;
         persist();
         return n;
     };
@@ -4673,8 +4705,19 @@
         return !!(el.querySelector && el.querySelector(LEGACY_MUTATION_CONTAINERS));
     }
 
+    // Captions re-render inside the player several times a second and never
+    // affect filtering, yet each update queued a full pass (measured live
+    // 2026-10: 14 passes in 15 s on a captioned video).
+    const CAPTION_NODES = '.ytp-caption-window-container, .caption-window, ' +
+        '.captions-text, .ytp-caption-segment';
+
+    function isCaptionMutationNode(node) {
+        const el = node && node.nodeType === 1 ? node : node && node.parentElement;
+        return !!(el && el.closest && el.closest(CAPTION_NODES));
+    }
+
     function isLocallyHandledMutationNode(node) {
-        if (isExtensionMutationNode(node)) return true;
+        if (isExtensionMutationNode(node) || isCaptionMutationNode(node)) return true;
         const el = node && node.nodeType === 1 ? node : node && node.parentElement;
         if (el && el.closest &&
             (el.closest(INNER_CONTAINERS) || el.closest(COMMENT_RENDERERS))) return true;
@@ -4765,7 +4808,6 @@
             return;
         }
 
-        let pendingWhileHidden = false;
         const mustRunHidden = () =>
             settings.enabled &&
             settings.blackoutBlockedChannels &&

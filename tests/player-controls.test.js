@@ -24,12 +24,30 @@ function fakeClassList() {
 
 function buildHarness(data) {
     const listeners = new Map();
+    const owners = [];   // { owner, type, handler } for every live listener
     const elementsById = new Map();
     const rootChildren = [];
     const bodyChildren = [];
 
+    function listen(owner, type, handler) {
+        owners.push({ owner, type, handler });
+        if (!listeners.has(type)) listeners.set(type, []);
+        listeners.get(type).push(handler);
+    }
+
+    function unlisten(owner, type, handler) {
+        const index = owners.findIndex(item =>
+            item.owner === owner && item.type === type && item.handler === handler);
+        if (index >= 0) owners.splice(index, 1);
+        if (listeners.has(type)) {
+            listeners.set(type, listeners.get(type).filter(item => item !== handler));
+        }
+    }
+
     function element(tagName) {
         return {
+            addEventListener(type, handler) { listen(this, type, handler); },
+            removeEventListener(type, handler) { unlisten(this, type, handler); },
             tagName: String(tagName || 'div').toUpperCase(),
             dataset: {},
             style: {},
@@ -96,15 +114,8 @@ function buildHarness(data) {
     const document = {
         body: element('body'),
         activeElement: null,
-        addEventListener(type, handler) {
-            if (!listeners.has(type)) listeners.set(type, []);
-            listeners.get(type).push(handler);
-        },
-        removeEventListener(type, handler) {
-            if (listeners.has(type)) {
-                listeners.set(type, listeners.get(type).filter(item => item !== handler));
-            }
-        },
+        addEventListener(type, handler) { listen(document, type, handler); },
+        removeEventListener(type, handler) { unlisten(document, type, handler); },
         dispatchEvent(event) {
             for (const handler of listeners.get(event.type) || []) handler(event);
             return true;
@@ -219,7 +230,9 @@ function buildHarness(data) {
         for (const handler of storageListeners.slice()) handler({ data: { newValue } }, 'local');
     }
 
-    return { video, videoTarget, fire, changeData, on: document.addEventListener };
+    const listenerOwners = type => owners.filter(item => item.type === type).map(item => item.owner);
+
+    return { video, videoTarget, player, document, fire, changeData, listenerOwners, on: document.addEventListener };
 }
 
 const settle = () => new Promise(resolve => setTimeout(resolve, 10));
@@ -350,4 +363,29 @@ test('speed hotkeys report each change for per-channel memory', async () => {
     assert.equal(reports.length, 1);
     assert.equal(reports[0].site, 'youtube');
     assert.equal(reports[0].speed, 1.25);
+});
+
+test('a wheel listener exists only for configured wheel shortcuts, on the player', async () => {
+    const plain = buildHarness({ settings: { enabled: true } });
+    await settle();
+    assert.equal(plain.listenerOwners('wheel').length, 0,
+        'no wheel shortcut, so page scrolling never waits on this script');
+
+    const data = {
+        settings: { enabled: true },
+        inputBindings: {
+            youtube: { enabled: true, keyboard: {}, mouse: {}, wheel: { volumeUp: 'WheelUp' } }
+        }
+    };
+    const bound = buildHarness(data);
+    await settle();
+    const owners = bound.listenerOwners('wheel');
+    assert.equal(owners.length, 1);
+    assert.equal(owners[0], bound.player, 'scoped to the player, not the document');
+
+    bound.changeData(Object.assign({}, data, {
+        inputBindings: { youtube: { enabled: true, keyboard: {}, mouse: {}, wheel: {} } }
+    }));
+    await settle();
+    assert.equal(bound.listenerOwners('wheel').length, 0, 'removing the shortcut removes the listener');
 });

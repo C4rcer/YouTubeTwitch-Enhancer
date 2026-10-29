@@ -1,5 +1,23 @@
 # Changelog
 
+## 4.8.7 — 2026-10-29
+
+### Performance
+
+- The two largest records no longer travel with every save. Hidden-video details (title, channel and thumbnail for up to 2,000 videos) and the undo history (up to 50 entries, each holding before/after snapshots of up to 12 KB) moved out of the shared `data` record into their own keys, `ytbHiddenVideoMeta` and `ytbRecentActions`. Every save to `data` (a volume-wheel change, a hide, a toggled setting) is delivered to every open YouTube and Twitch tab and the background page, and each re-processes it, so all of those copies shrink. The settings pages still work with one joined record and rewrite a separate key only when they changed it. Copies left inside `data` are moved once at startup, and any writer of a separate key folds in a copy an older version left behind.
+- No wheel listener is attached unless a wheel shortcut is configured (none are by default), and then only on the player. Before, a document-wide, non-passive wheel listener made the browser wait on the add-on before every scroll on both sites, and each wheel event measured layout to find the player.
+- Captions no longer trigger a full filtering pass about once a second. Caption text re-renders inside the player constantly and never affects filtering (measured on a captioned video: 14 full passes in 15 seconds).
+- A YouTube tab in the background no longer re-runs the full pass every time a video is watched in another tab. It catches up once when shown, like the other work it already deferred.
+
+### Fixed
+
+- The Twitch uptime chip no longer tries the page's LD+JSON block first. Twitch's structured data stopped carrying the stream start (it is now an `@graph` ProfilePage without `publication`, verified live 2026-10), so that lookup always fell through to the Apollo cache, which still works.
+- README: removed the link to the missing `IMPLEMENTATION_PLAN.md`, split two bullets that had run together, added the missing blank lines before headings, and documented the separate storage keys.
+
+### Validation
+
+- New regression tests cover the joined record pages see (split on save, an unchanged key not rewritten, change events from either key), the startup migration, sync rewrites leaving no empty placeholders in `data`, hidden-video details written by the YouTube tab (including two saves in a row, which now run one at a time so neither drops the other's details), the wheel listener's scope, caption mutations, and hidden-tab deferral. Each fails against 4.8.6 and passes now. The Twitch sidebar and YouTube collection undo writers are covered only through the shared merge helpers. Full suite passes 116/116. Not yet checked in a running Firefox.
+
 ## 4.8.6 — 2026-10-29
 
 ### Fixed

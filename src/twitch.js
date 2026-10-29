@@ -1946,31 +1946,13 @@
 
     /* ==================================================================
      * 6f. Stream uptime chip next to the viewer count.
-     * The start time comes from the page itself: the SSR LD+JSON block on a
-     * full load, falling back to the Apollo cache reached through a React
-     * fiber (same page-world plumbing as the chat editor). Best-effort —
-     * when neither yields a time, no chip is shown.
+     * The start time comes from the Apollo cache reached through a React
+     * fiber (same page-world plumbing as the chat editor). The SSR LD+JSON
+     * block no longer carries it (verified live 2026-10: an @graph
+     * ProfilePage without `publication`). Best-effort — when the cache
+     * yields no time, no chip is shown.
      * ================================================================== */
     let uptimeCache = { login: null, start: 0, at: 0 };
-
-    function streamStartFromLdJson(login) {
-        for (const s of document.querySelectorAll('script[type="application/ld+json"]')) {
-            try {
-                const data = JSON.parse(s.textContent);
-                for (const d of (Array.isArray(data) ? data : [data])) {
-                    if (!d || !d.publication) continue;
-                    // Stale after SPA navigation: only trust it for its channel.
-                    if (!JSON.stringify(d).toLowerCase().includes('twitch.tv/' + login)) continue;
-                    const pubs = Array.isArray(d.publication) ? d.publication : [d.publication];
-                    for (const p of pubs) {
-                        const t = p && p.startDate && Date.parse(p.startDate);
-                        if (t) return t;
-                    }
-                }
-            } catch (e) { /* not JSON we understand */ }
-        }
-        return 0;
-    }
 
     function streamStartFromApollo(login) {
         try {
@@ -2023,11 +2005,7 @@
             return;
         }
         if (uptimeCache.login !== login || Date.now() - uptimeCache.at > 300000) {
-            uptimeCache = {
-                login,
-                start: streamStartFromLdJson(login) || streamStartFromApollo(login),
-                at: Date.now()
-            };
+            uptimeCache = { login, start: streamStartFromApollo(login), at: Date.now() };
         }
         if (!uptimeCache.start || uptimeCache.start > Date.now()) {
             if (existing) existing.remove();
