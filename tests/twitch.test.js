@@ -23,7 +23,6 @@ function loadTwitch(options = {}) {
         console,
         URL,
         URLSearchParams,
-        AbortController,
         NodeFilter,
         document,
         location: {
@@ -177,13 +176,9 @@ test('an auto-claim tab with nothing to claim gives up, unless the user is on it
 
 test('a hung emote provider holds back neither the others nor the round', async () => {
     let resolve7tv;
-    const fetch = (url, init) => {
-        if (url.includes('frankerfacez')) {
-            // Accepts the connection, never answers; only an abort ends it.
-            return new Promise((_, reject) => {
-                if (init && init.signal) init.signal.addEventListener('abort', () => reject(new Error('aborted')));
-            });
-        }
+    const fetch = url => {
+        // Accepts the connection and never answers.
+        if (url.includes('frankerfacez')) return new Promise(() => {});
         if (url === 'https://api.betterttv.net/3/cached/emotes/global') {
             return Promise.resolve({ ok: true, json: async () => [{ id: 'b1', code: 'catJAM' }] });
         }

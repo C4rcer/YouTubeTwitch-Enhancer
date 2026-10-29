@@ -1411,12 +1411,18 @@
     const EMOTE_FETCH_TIMEOUT_MS = 8000;
 
     async function fetchJson(url) {
-        const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), EMOTE_FETCH_TIMEOUT_MS);
+        let timer = null;
+        const timeout = new Promise((resolve, reject) => {
+            timer = setTimeout(() => reject(new Error('timeout')), EMOTE_FETCH_TIMEOUT_MS);
+        });
         try {
-            const r = await fetch(url, { signal: ctrl.signal });
-            if (!r.ok) throw new Error('HTTP ' + r.status);
-            return await r.json();
+            return await Promise.race([
+                fetch(url).then(r => {
+                    if (!r.ok) throw new Error('HTTP ' + r.status);
+                    return r.json();
+                }),
+                timeout
+            ]);
         } finally {
             clearTimeout(timer);
         }
