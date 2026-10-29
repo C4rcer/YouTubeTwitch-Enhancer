@@ -8,3 +8,6 @@ npm-debug.log*
 
 # web-ext sign artifact (local submission id)
 .amo-upload-uuid
+
+# Claude Code project notes (kept local)
+CLAUDE.md
