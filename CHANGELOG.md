@@ -1,5 +1,18 @@
 # Changelog
 
+## 4.8.8 - 2026-11-01
+
+### Fixed
+
+- "Block this Twitch category" answered "Couldn't work out which category that is" for much of the page, because it only understood a right-click on a category link or inside a stream card's `<article>`. It now resolves the card you right-clicked, wherever on the card you clicked: a Browse page category card's tag pill (the "IRL" pill is a sibling button, not inside a link), box art or padding; the featured stream at the top of the home page; and sidebar cards, whose category is plain text and is matched by name against a category link on the page.
+- On a channel page, right-clicking a sidebar card for a different channel blocked the category of the stream being watched. A right-click on any card now means that card's category, or nothing, and never falls through to the page's category. When a sidebar card's category has no link on the page, the toast says to block it from the channel page.
+- Home-page shelf headings such as "Just Chatting & IRL" link to a Twitch collection, a curated mix of categories that the page never lists, not to a category. Right-clicking one (or blank space on a collection page) now explains that and points at the streams in it, which block their own categories (that collection draws on `just-chatting` and `irl`).
+- Categories blocked from a home-page category shelf card were saved with the card's whole text as their name ("Just ChattingIRL266K live viewersUse the Right Arrow Key…"). The name now comes from the card's title.
+
+### Validation
+
+- Every target type was resolved by the shipped functions, extracted from `twitch.js` and run against the live home, Browse and collection pages: the collection heading and "Show all" report a collection, the "IRL" pill resolves to its Just Chatting card, shelf, stream and carousel cards resolve to their own category with a clean name, and an unlinked sidebar category returns only its name. New regressions in `tests/twitch.test.js` cover each case plus the fail-closed rule for a container naming two categories; five of the six fail on 4.8.7. Full suite passes 122/122.
+
 ## 4.8.7 — 2026-10-29
 
 ### Performance

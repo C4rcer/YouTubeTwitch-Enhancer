@@ -70,6 +70,7 @@ function loadTwitch(options = {}) {
         claimInventoryHere,
         autoClaimDrops,
         maybeFetchEmotes,
+        categoryFromTarget,
         configure(input) { settings = Object.assign({}, DEFAULT_SETTINGS, input); },
         // What init() does for a tab opened at #ytbtw-autoclaim.
         armInventoryClose() { inventoryArmedAt = Date.now(); },
@@ -172,6 +173,103 @@ test('an auto-claim tab with nothing to claim gives up, unless the user is on it
     watched.armInventoryClose();
     watched.advance(31000); watched.autoClaimDrops();
     assert.deepEqual(watched.sent, [], 'a tab the user switched to stays open');
+});
+
+// Markup shapes below mirror the live pages (2026-11-01).
+function sideNavCard(login, category) {
+    return h('div', { class: 'side-nav-card' },
+        h('a', { 'data-test-selector': 'followed-channel', href: '/' + login },
+            h('div', { 'data-a-target': 'side-nav-card-metadata' },
+                h('p', { 'data-a-target': 'side-nav-title', title: login }, login),
+                h('p', { title: category }, category))));
+}
+
+test('a right-click anywhere on a Browse category card means that category', () => {
+    const boxArt = h('img', { alt: 'Just Chatting cover image' });
+    const irlPill = h('button', { 'data-a-target': 'IRL', 'aria-label': 'Tag, IRL' }, 'IRL');
+    const padding = h('div', {});
+    const tw = loadTwitch({
+        pathname: '/directory',
+        body: [h('div', { class: 'tw-tower' },
+            h('div', {},
+                h('a', { 'data-a-target': 'tw-box-art-card-link', href: '/directory/category/just-chatting' }, boxArt),
+                h('h2', { title: 'Just Chatting' }, h('a', { href: '/directory/category/just-chatting' }, 'Just Chatting')),
+                h('a', { href: '/directory/category/just-chatting' }, '269K viewers'),
+                padding, irlPill))]
+    });
+    for (const target of [boxArt, irlPill, padding]) {
+        assert.deepEqual({ ...tw.categoryFromTarget(target) }, { slug: 'just-chatting', name: 'Just Chatting' });
+    }
+});
+
+test('a home shelf category card is named by its title, not its whole text', () => {
+    const viewers = h('p', {}, '266K live viewers');
+    const tw = loadTwitch({
+        pathname: '/',
+        body: [h('a', { href: '/directory/category/just-chatting' },
+            h('p', { title: 'Just Chatting' }, 'Just Chatting'),
+            h('span', { title: 'IRL' }, 'IRL'),
+            viewers)]
+    });
+    assert.deepEqual({ ...tw.categoryFromTarget(viewers) }, { slug: 'just-chatting', name: 'Just Chatting' });
+});
+
+test('stream cards and the featured carousel resolve to their own category', () => {
+    const thumb = h('img', {});
+    const video = h('video', {});
+    const tw = loadTwitch({
+        pathname: '/',
+        body: [
+            h('div', { 'data-a-target': 'front-page-carousel' },
+                video, h('a', { href: '/anniesatv' }, 'anniesatv'),
+                h('a', { href: '/directory/category/aion-2' }, 'AION 2')),
+            h('article', {},
+                h('a', { 'data-a-target': 'preview-card-image-link', href: '/jantuneee' }, thumb),
+                h('a', { 'data-a-target': 'preview-card-game-link', href: '/directory/category/wardogs' }, 'WARDOGS'),
+                h('a', { href: '/directory/all/tags/PUBG' }, 'PUBG'))
+        ]
+    });
+    assert.deepEqual({ ...tw.categoryFromTarget(thumb) }, { slug: 'wardogs', name: 'WARDOGS' });
+    assert.deepEqual({ ...tw.categoryFromTarget(video) }, { slug: 'aion-2', name: 'AION 2' });
+});
+
+test('a sidebar card never falls through to the watched stream category', () => {
+    const streamGame = h('a', { 'data-a-target': 'stream-game-link', href: '/directory/category/hunt-showdown' },
+        h('span', {}, 'Hunt: Showdown 1896'));
+    const other = sideNavCard('someone', 'Just Chatting');
+    const same = sideNavCard('arskanator', 'Hunt: Showdown 1896');
+    const tw = loadTwitch({ pathname: '/arskanator', body: [h('nav', {}, other, same), h('main', {}, streamGame)] });
+
+    // Only a name: matched against a category link on the page when there is one.
+    assert.deepEqual({ ...tw.categoryFromTarget(same.querySelector('p[title="Hunt: Showdown 1896"]')) },
+        { slug: 'hunt-showdown', name: 'Hunt: Showdown 1896' });
+    assert.deepEqual({ ...tw.categoryFromTarget(other.querySelector('p[title="Just Chatting"]')) },
+        { slug: '', name: 'Just Chatting' }, 'unresolved, not hunt-showdown');
+    // A right-click elsewhere on the channel page still means the stream's category.
+    assert.equal(tw.categoryFromTarget(h('div', {})).slug, 'hunt-showdown');
+});
+
+test('collection shelves and pages are reported as collections, not categories', () => {
+    const heading = h('a', { href: '/directory/collection/just-chatting-irl-streams' }, 'Just Chatting & IRL');
+    const showAll = h('a', { href: '/directory/collection/just-chatting-irl-streams' }, 'Show all');
+    const home = loadTwitch({ pathname: '/', body: [h('h2', {}, heading), showAll] });
+    assert.deepEqual({ ...home.categoryFromTarget(heading) }, { slug: '', collection: true });
+    assert.deepEqual({ ...home.categoryFromTarget(showAll) }, { slug: '', collection: true });
+
+    const page = loadTwitch({ pathname: '/directory/collection/just-chatting-irl-streams', body: [h('main', {})] });
+    assert.deepEqual({ ...page.categoryFromTarget(h('div', {})) }, { slug: '', collection: true });
+});
+
+test('a container naming more than one category resolves to none', () => {
+    const blank = h('div', {});
+    const tw = loadTwitch({
+        pathname: '/directory',
+        body: [h('div', { class: 'tw-tower' }, h('div', {},
+            h('a', { href: '/directory/category/rust' }, 'Rust'),
+            h('a', { href: '/directory/category/irl' }, 'IRL'),
+            blank))]
+    });
+    assert.equal(tw.categoryFromTarget(blank), null);
 });
 
 test('a hung emote provider holds back neither the others nor the round', async () => {
