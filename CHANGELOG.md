@@ -1,5 +1,15 @@
 # Changelog
 
+## 4.8.9 - 2026-11-01
+
+### Fixed
+
+- The previous video's title could stay under the player in front of the current one ("HW News - OpenAI Says You Waste RAM…Rings of Power Returns to…"). YouTube draws that title through ShadyDOM, which, when the next video loads, removes only the text node it inserted itself. Text written any other way stays beside every later title: the add-on's own DeArrow or title-repair write, one left by an add-on copy that was removed, reinstalled or updated mid-video, and the original title put back when DeArrow titles is switched off. The old clean-up ran only while DeArrow titles was on, and it recognised its own text by markers that switching DeArrow off, or a fresh install, clears. Now any title text that YouTube's ShadyDOM does not own is removed once YouTube has rendered its own, whatever the DeArrow setting, on every pass and in the same observer turn that YouTube inserts the new title. If YouTube owns no title text, nothing is removed.
+
+### Validation
+
+- Found live on 2026-11-01 in a tab left open across a reinstall of the add-on: the heading held two text nodes, the previous title with no ShadyDOM data and the current title with it, there were no add-on markers anywhere on the page, and DeArrow titles was off. An SPA navigation in a background tab confirmed that YouTube replaces its own node cleanly. The shipped functions, extracted from `content.js` and run in the affected tab, removed only the stale node. Four new regressions in `tests/content-filter.test.js` cover the state found live, switching DeArrow off mid-video, a new add-on instance cleaning up an earlier instance's write, and the cases that must be left alone; the first three fail against 4.8.8. Full suite passes 126/126.
+
 ## 4.8.8 - 2026-11-01
 
 ### Fixed

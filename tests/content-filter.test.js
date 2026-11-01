@@ -190,7 +190,13 @@ function loadContentHarness(watched, options = {}) {
             }
             return dom ? dom.querySelector(selector) : null;
         },
-        querySelectorAll(selector) { return dom ? dom.querySelectorAll(selector) : []; },
+        querySelectorAll(selector) {
+            // The DeArrow restore pass looks the heading up by its markers.
+            if (watchTitle && /data-ytb-de-(title|await-title|watch-written)\]/.test(selector)) {
+                return [watchTitle];
+            }
+            return dom ? dom.querySelectorAll(selector) : [];
+        },
         getElementById(id) { return id === 'movie_player' ? moviePlayer : null; }
     };
 
@@ -281,6 +287,8 @@ function loadContentHarness(watched, options = {}) {
         isPendingWhileHidden() { return pendingWhileHidden; },
         prepareDeArrowTitleIdentity,
         applyDeArrowTitle,
+        restoreDeArrowTitles,
+        pruneWatchTitleLeftovers,
         processDeArrowWatchPage,
         beginDeArrowWatchNavigation,
         finishDeArrowWatchNavigation,
@@ -876,6 +884,121 @@ test('watch-page DeArrow removes its stale text node when YouTube appends the ne
     api.refreshDeArrowWatchTitle();
     assert.equal(title.textContent, 'Community B');
     assert.equal(title.dataset.ytbDeOriginalTitle, 'Native B');
+});
+
+// YouTube's own title text: ShadyDOM tags the node it inserted (verified live
+// 2026-11-01). Text the extension writes through textContent carries no tag.
+function youtubeText(text) {
+    const node = new FakeHeadingText(text);
+    node.__shady = { parentNode: null };
+    return node;
+}
+
+function headingWith(...nodes) {
+    const heading = new FakeHeading('');
+    heading.childNodes = nodes;
+    return heading;
+}
+
+function navigateWatch(api, title, playerData, flexyData, vid, text) {
+    // ShadyDOM removes only its own (already detached) node, then appends.
+    title.childNodes.push(youtubeText(text));
+    api.setPath('/watch?v=' + vid);
+    flexyData.videoId = vid;
+    playerData.video_id = vid;
+    playerData.title = text;
+}
+
+test('a title YouTube no longer manages is pruned with DeArrow off', () => {
+    // The state found live: no DeArrow markers, DeArrow titles off, and the
+    // previous video's title left as a node ShadyDOM does not know about.
+    const title = headingWith(
+        new FakeHeadingText('HW News - previous video'),
+        youtubeText('Rings of Power - current video'));
+    const api = loadContentHarness(new Set(), { watchTitle: title });
+    api.configure({ settings: { enabled: true, deArrowTitles: false } });
+
+    api.setPath('/results?search_query=x');
+    api.pruneWatchTitleLeftovers();
+    assert.equal(title.childNodes.length, 2, 'only watch pages are touched');
+
+    api.setPath('/watch?v=video-b');
+    api.pruneWatchTitleLeftovers();
+    assert.equal(title.textContent, 'Rings of Power - current video');
+});
+
+test('switching DeArrow off mid-video leaves no title under the next video', () => {
+    const title = headingWith(youtubeText('Native A'));
+    const playerData = { video_id: 'video-a', title: 'Native A' };
+    const flexyData = { videoId: 'video-a' };
+    const api = loadContentHarness(
+        new Set(), { watchTitle: title, playerData, flexyData }
+    );
+
+    api.configure({ settings: { enabled: true, deArrowTitles: true } });
+    api.setPath('/watch?v=video-a');
+    api.setDeArrowCache('video-a', { title: 'Community A' });
+    api.processDeArrowWatchPage();
+    assert.equal(title.textContent, 'Community A');
+
+    // The restore writes A's original back as a node YouTube does not own,
+    // and drops the markers that told the old prune which node was ours.
+    api.configure({ settings: { enabled: true, deArrowTitles: false } });
+    api.restoreDeArrowTitles();
+    assert.equal(title.textContent, 'Native A');
+    assert.equal(title.dataset.ytbDeWatchWritten, undefined);
+
+    navigateWatch(api, title, playerData, flexyData, 'video-b', 'Native B');
+    assert.equal(title.textContent, 'Native ANative B', 'the reported symptom');
+    api.pruneWatchTitleLeftovers();
+    assert.equal(title.textContent, 'Native B');
+});
+
+test('a new add-on instance cleans up the title an earlier instance wrote', () => {
+    // Removing, reinstalling or updating the add-on mid-video replaces the
+    // content script. The new one starts with DeArrow off (the default).
+    const title = headingWith(youtubeText('Native A'));
+    const playerData = { video_id: 'video-a', title: 'Native A' };
+    const flexyData = { videoId: 'video-a' };
+    const earlier = loadContentHarness(
+        new Set(), { watchTitle: title, playerData, flexyData }
+    );
+    earlier.configure({ settings: { enabled: true, deArrowTitles: true } });
+    earlier.setPath('/watch?v=video-a');
+    earlier.setDeArrowCache('video-a', { title: 'Community A' });
+    earlier.processDeArrowWatchPage();
+    assert.equal(title.textContent, 'Community A');
+
+    const later = loadContentHarness(
+        new Set(), { watchTitle: title, playerData, flexyData }
+    );
+    later.configure({ settings: { enabled: true } });
+    navigateWatch(later, title, playerData, flexyData, 'video-b', 'Native B');
+    later.pruneWatchTitleLeftovers();
+    assert.equal(title.textContent, 'Native B');
+    assert.equal(title.dataset.ytbDeTitle, undefined);
+    assert.equal(title.dataset.ytbDeWatchWritten, undefined);
+});
+
+test('title cleanup leaves text alone without proof that it is stale', () => {
+    const prune = title => {
+        const harness = loadContentHarness(new Set(), { watchTitle: title });
+        harness.configure({ settings: { enabled: true } });
+        harness.setPath('/watch?v=video-a');
+        harness.pruneWatchTitleLeftovers();
+        return title.childNodes.map(node => node.textContent);
+    };
+
+    assert.deepEqual(prune(headingWith(new FakeHeadingText('Community A'))),
+        ['Community A'], 'our own write stays until YouTube renders beside it');
+    assert.deepEqual(
+        prune(headingWith(new FakeHeadingText('A'), new FakeHeadingText('B'))),
+        ['A', 'B'], 'no ShadyDOM-owned node and no write marker proves nothing');
+    assert.deepEqual(prune(headingWith(youtubeText('A'), youtubeText('B'))),
+        ['A', 'B'], 'text YouTube owns is never removed');
+    assert.deepEqual(
+        prune(headingWith(new FakeHeadingText('\n    '), youtubeText('B'))),
+        ['\n    ', 'B'], 'formatting whitespace is not a title');
 });
 
 test('watch-page DeArrow trusts native hydration over its own last repair', () => {
