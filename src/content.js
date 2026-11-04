@@ -3200,35 +3200,65 @@
         )];
     }
 
+    // RYD's count can never include your own dislike: this add-on only reads
+    // counts and never sends votes. So, like the official extension's local
+    // +1, the shown count adds one while your dislike is pressed, and drops it
+    // again when you take it back or like instead (verified live 2026-11:
+    // the pressed state is the button's aria-pressed).
+    let rydPressObserver = null;
+    const rydObserved = new WeakSet();
+
+    function watchRydPress(b) {
+        if (rydObserved.has(b) || typeof MutationObserver === 'undefined') return;
+        if (!rydPressObserver) {
+            rydPressObserver = new MutationObserver(records => {
+                if (retired) return;
+                records.forEach(record => renderRydCount(record.target));
+            });
+        }
+        rydObserved.add(b);
+        rydPressObserver.observe(b, { attributes: true, attributeFilter: ['aria-pressed'] });
+    }
+
     function applyRydTo(b, vid, res) {
         b.dataset.ytbRyd = vid;
-        const label = formatCount(res.dislikes);
-        const txt = b.querySelector('.yt-spec-button-shape-next__button-text-content');
-        if (txt) {
-            txt.textContent = label;
-        } else {
-            // Icon-only button: append a count and widen it. YouTube pins the
-            // button AND its view-model wrappers to a fixed width with
-            // higher-specificity !important rules, so inline styles it is
-            // (verified live 2026-07: stylesheet width:auto!important lost).
-            let span = b.querySelector('.ytb-ryd-count');
-            if (!span) {
-                span = document.createElement('span');
-                span.className = 'ytb-ryd-count';
-                b.appendChild(span);
-            }
-            span.textContent = label;
-            b.classList.add('ytb-ryd-btn');
-            b.style.setProperty('padding-right', '16px', 'important');
-            const stop = b.closest('segmented-like-dislike-button-view-model');
-            let el = b;
-            while (el && stop && el !== stop) {
-                el.style.setProperty('width', 'auto', 'important');
-                el = el.parentElement;
-            }
-            if (!stop) b.style.setProperty('width', 'auto', 'important');
+        b.dataset.ytbRydBase = String(res.dislikes);
+        renderRydCount(b);
+        watchRydPress(b);
+        if (b.querySelector('.yt-spec-button-shape-next__button-text-content')) return;
+        // Icon-only button: widen it for the appended count. YouTube pins the
+        // button AND its view-model wrappers to a fixed width with
+        // higher-specificity !important rules, so inline styles it is
+        // (verified live 2026-07: stylesheet width:auto!important lost).
+        b.classList.add('ytb-ryd-btn');
+        b.style.setProperty('padding-right', '16px', 'important');
+        const stop = b.closest('segmented-like-dislike-button-view-model');
+        let el = b;
+        while (el && stop && el !== stop) {
+            el.style.setProperty('width', 'auto', 'important');
+            el = el.parentElement;
         }
-        b.title = res.dislikes.toLocaleString() + ' dislikes — Return YouTube Dislike';
+        if (!stop) b.style.setProperty('width', 'auto', 'important');
+    }
+
+    function renderRydCount(b) {
+        const base = Number(b.dataset.ytbRydBase);
+        if (!b.dataset.ytbRyd || !Number.isFinite(base)) return;
+        const count = base + (b.getAttribute('aria-pressed') === 'true' ? 1 : 0);
+        const label = formatCount(count);
+        let target = b.querySelector('.yt-spec-button-shape-next__button-text-content');
+        if (!target) {
+            // Icon-only button: the count goes in a span of our own.
+            target = b.querySelector('.ytb-ryd-count');
+            if (!target) {
+                target = document.createElement('span');
+                target.className = 'ytb-ryd-count';
+                b.appendChild(target);
+            }
+        }
+        if (target.textContent !== label) target.textContent = label;
+        const title = count.toLocaleString() + ' dislikes — Return YouTube Dislike';
+        if (b.title !== title) b.title = title;
     }
 
     let rydPendingVid = null;
@@ -3237,6 +3267,12 @@
         const vid = watchVideoId();
         if (!vid || rydPendingVid === vid) return;
         const btns = dislikeButtons();
+        // Buttons already showing this video's count (possibly written by an
+        // earlier add-on instance) still need watching for your own vote.
+        btns.filter(b => b.dataset.ytbRyd === vid).forEach(b => {
+            renderRydCount(b);
+            watchRydPress(b);
+        });
         if (!btns.length || btns.every(b => b.dataset.ytbRyd === vid)) return;
         rydPendingVid = vid;
         api.runtime.sendMessage({ action: 'ytb-ryd-votes', videoId: vid }).then((res) => {
@@ -4828,6 +4864,10 @@
             detailObserver = null;
         }
         detailObserved = new WeakSet();
+        if (rydPressObserver) {
+            rydPressObserver.disconnect();
+            rydPressObserver = null;
+        }
         if (maintenanceTimer) {
             clearTimeout(maintenanceTimer);
             maintenanceTimer = null;

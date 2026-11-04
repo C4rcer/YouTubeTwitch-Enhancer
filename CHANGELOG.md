@@ -1,5 +1,19 @@
 # Changelog
 
+## 4.8.11 - 2026-11-04
+
+### Fixed
+
+- Disliking a video didn't change the Return YouTube Dislike count on the button: it stayed at the number fetched when the page loaded (for example 11, with the dislike button pressed). This add-on only reads counts from RYD and never sends votes, so RYD's count can never include yours. The shown count now adds one while your dislike is pressed, the same local +1 the official RYD extension shows, and drops it again when you take the dislike back or like the video instead. It updates the moment the button's pressed state changes, including on a count an earlier add-on instance wrote before a reload.
+
+### Performance
+
+- The one-time move of hidden-video details and undo history out of `data` (4.8.7) now checks `data` first and reads those two large keys only when there is something to move. On Firefox it runs once per browser session; the Chromium build, whose service worker restarts often, needed this most.
+
+### Validation
+
+- Seen live on 2026-11-04: on a disliked video the dislike button had `aria-pressed="true"` while the add-on's count still read RYD's 11. Two new regressions in `tests/content-filter.test.js` cover pressing and un-pressing the button and a count left by an earlier instance; both fail against 4.8.10. Full suite passes 130/130. The live check after reloading the add-on is still to do.
+
 ## 4.8.10 - 2026-11-04
 
 ### Fixed

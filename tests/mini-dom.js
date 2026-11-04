@@ -268,6 +268,22 @@ function datasetOf(el) {
     });
 }
 
+// Plain properties work as before; the CSSStyleDeclaration methods are kept
+// apart from them.
+function styleOf() {
+    const declared = new Map();
+    return {
+        setProperty(name, value, priority) { declared.set(name, { value: String(value), priority: priority || '' }); },
+        getPropertyValue(name) { return declared.has(name) ? declared.get(name).value : ''; },
+        getPropertyPriority(name) { return declared.has(name) ? declared.get(name).priority : ''; },
+        removeProperty(name) {
+            const old = declared.has(name) ? declared.get(name).value : '';
+            declared.delete(name);
+            return old;
+        }
+    };
+}
+
 function classListOf(el) {
     const read = () => (el.getAttribute('class') || '').split(/\s+/).filter(Boolean);
     const write = names => el.setAttribute('class', names.join(' '));
@@ -292,7 +308,7 @@ class MiniElement extends MiniNode {
         this.attributes = new Map();
         this.dataset = datasetOf(this);
         this.classList = classListOf(this);
-        this.style = {};
+        this.style = styleOf();
         this.clicks = 0;
         this.rendered = true;
     }

@@ -197,7 +197,8 @@ function loadContentHarness(watched, options = {}) {
             }
             return dom ? dom.querySelectorAll(selector) : [];
         },
-        getElementById(id) { return id === 'movie_player' ? moviePlayer : null; }
+        getElementById(id) { return id === 'movie_player' ? moviePlayer : null; },
+        createElement: tag => new (require('./mini-dom').MiniElement)(tag)
     };
 
     let revision = 0;
@@ -217,6 +218,17 @@ function loadContentHarness(watched, options = {}) {
         removeHidden() {}
     };
     const noopListener = { addListener() {} };
+    // MutationObserver stand-in: mutate(target, attributeName) delivers a
+    // record to every observer watching that target.
+    const observers = [];
+    class FakeMutationObserver {
+        constructor(callback) { this.callback = callback; this.targets = new Set(); observers.push(this); }
+        observe(target) { this.targets.add(target); }
+        disconnect() { this.targets.clear(); }
+    }
+    const mutate = (target, attributeName) => observers
+        .filter(observer => observer.targets.has(target))
+        .forEach(observer => observer.callback([{ type: 'attributes', target, attributeName }]));
     // Optional storage.local: each call settles a tick later, so two saves
     // that are not serialized would interleave their reads and writes.
     const storage = options.storage || null;
@@ -257,6 +269,7 @@ function loadContentHarness(watched, options = {}) {
         clearInterval() {},
         requestAnimationFrame() {},
         confirm: () => true,
+        MutationObserver: FakeMutationObserver,
         YTBWatchedDB: watchedDb,
         YTBFeatures: storage ? require('../src/feature-core.js') : undefined
     };
@@ -290,6 +303,8 @@ function loadContentHarness(watched, options = {}) {
         restoreDeArrowTitles,
         pruneWatchTitleLeftovers,
         processDeArrowWatchPage,
+        applyRydTo,
+        processRyd,
         applyMaxQuality,
         beginDeArrowWatchNavigation,
         finishDeArrowWatchNavigation,
@@ -330,7 +345,7 @@ function loadContentHarness(watched, options = {}) {
     vm.runInContext(source, context, { filename: CONTENT_PATH });
     const fire = (type, detail) => (listeners[type] || []).forEach(fn => fn({ type, detail }));
     const setHidden = value => { document.hidden = value; };
-    return Object.assign(context.__YTB_FILTER_TEST__, { channelAttributions, fire, setHidden });
+    return Object.assign(context.__YTB_FILTER_TEST__, { channelAttributions, fire, setHidden, mutate });
 }
 
 function childListRecord(root) {
@@ -1609,4 +1624,48 @@ test('max quality waits until the player is on the video in the URL', () => {
     player.vid = 'nextVideo01';
     api.applyMaxQuality();
     assert.equal(player.preferred, 'hd2160');
+});
+
+// The watch page's dislike button as rendered live 2026-11 (icon-only, the
+// pressed state on the button's aria-pressed).
+function watchDislikeButton(pressed) {
+    const button = h('button', { 'aria-pressed': pressed ? 'true' : 'false', 'aria-label': 'Dislike this video' });
+    h('ytd-watch-metadata', {},
+        h('segmented-like-dislike-button-view-model', {},
+            h('dislike-button-view-model', {}, button)));
+    return button;
+}
+
+test('your own dislike shows in the Return YouTube Dislike count', () => {
+    const api = loadContentHarness(new Set());
+    const button = watchDislikeButton(false);
+    api.applyRydTo(button, 'rydVideo001', { dislikes: 11 });
+    assert.equal(button.querySelector('.ytb-ryd-count').textContent, '11');
+
+    // RYD never hears about this vote, so its count can't include it.
+    button.setAttribute('aria-pressed', 'true');
+    api.mutate(button, 'aria-pressed');
+    assert.equal(button.querySelector('.ytb-ryd-count').textContent, '12');
+    assert.match(button.getAttribute('title'), /^12 dislikes/);
+
+    // Taking it back, or liking instead, un-presses the button.
+    button.setAttribute('aria-pressed', 'false');
+    api.mutate(button, 'aria-pressed');
+    assert.equal(button.querySelector('.ytb-ryd-count').textContent, '11');
+});
+
+test('a count written before a reload still follows your vote', () => {
+    const button = watchDislikeButton(true);
+    // Stamped by an earlier add-on instance: no new lookup is made.
+    button.dataset.ytbRyd = 'rydVideo001';
+    button.dataset.ytbRydBase = '11';
+    const api = loadContentHarness(new Set(), { dom: createDocument(button.closest('ytd-watch-metadata')) });
+    api.configure({ settings: { enabled: true, rydEnabled: true } });
+    api.setPath('/watch?v=rydVideo001');
+    api.processRyd();
+    assert.equal(button.querySelector('.ytb-ryd-count').textContent, '12');
+
+    button.setAttribute('aria-pressed', 'false');
+    api.mutate(button, 'aria-pressed');
+    assert.equal(button.querySelector('.ytb-ryd-count').textContent, '11', 'and is watched from then on');
 });

@@ -151,8 +151,9 @@ the separate SponsorBlock / DeArrow / Return YouTube Dislike extensions:
   via a separate heavier toggle, thumbnails) with community-submitted ones
   where they exist — on tiles and the watch page.
 - **Return YouTube Dislike.** Shows the crowdsourced dislike count on the
-  watch page's dislike button. Lookups are cached per video, far inside the
-  service's rate limits.
+  watch page's dislike button, plus your own dislike while it's pressed (the
+  add-on only reads counts and never sends votes). Lookups are cached per
+  video, far inside the service's rate limits.
 
 All three are **off by default** and clearly separated in the options page
 under "Community data", with the privacy notes repeated there.

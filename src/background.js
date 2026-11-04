@@ -570,10 +570,12 @@
     async function migrateSplitRecords() {
         const metaKey = YTBFeatures.HIDDEN_VIDEO_META_KEY;
         const historyKey = YTBFeatures.RECENT_ACTIONS_KEY;
-        const r = await api.storage.local.get(['data', metaKey, historyKey]);
-        const data = r.data;
+        // Read the large keys only when there is something to move: on
+        // Chromium this runs each time the service worker starts.
+        const { data } = await api.storage.local.get('data');
         if (!data || typeof data !== 'object' ||
             !('hiddenVideoMetadata' in data || 'recentActions' in data)) return;
+        const r = await api.storage.local.get([metaKey, historyKey]);
         const next = Object.assign({}, data);
         delete next.hiddenVideoMetadata;
         delete next.recentActions;
