@@ -121,7 +121,7 @@
     let menuOwnerTile = null;         // tile whose 3-dot menu button was last pressed
     let menuOwnerIsMain = false;      // menu opened from the main watch video, not a tile
     let blackoutActive = false;       // current page is a blocked channel/video
-    let lastQualityVideoId = null;    // video we've already forced to max quality
+    let qualityTarget = { vid: null, firstSeenAt: 0, settled: false };   // see applyMaxQuality
     let lastPointerDown = 0;          // timestamp of last pointerdown (menu-open hint)
     let lastNativeVolGesture = 0;     // last real interaction with YouTube's own volume control
     let nativeVolPointerDown = false; // a pointer is currently held on YouTube's volume slider
@@ -3837,26 +3837,52 @@
     }
 
     /* ==================================================================
-     * 5d. Force the player to the highest available quality, once per video.
+     * 5d. Keep the player at the highest available quality.
      *     The player API lives in the page world; Firefox exposes it to the
      *     content script via wrappedJSObject.
+     *     One early attempt is not enough (verified live 2026-11): after an
+     *     SPA navigation the player reports the new video with its streams,
+     *     then about 100 ms later resets its preference to "auto" while it
+     *     loads that video's formats, which wiped the old once-per-video
+     *     attempt. So every pass re-applies the best level until the video
+     *     plays at it (or QUALITY_SETTLE_MS have passed). After that a quality
+     *     picked by hand is kept; only a fall back to "auto" is corrected.
      * ================================================================== */
+    const QUALITY_SETTLE_MS = 5000;
+
     function applyMaxQuality() {
         if (location.pathname !== '/watch') return;
         const vid = new URLSearchParams(location.search).get('v');
-        if (!vid || vid === lastQualityVideoId) return;   // already done this video
+        if (!vid) return;
+        if (qualityTarget.vid !== vid) qualityTarget = { vid, firstSeenAt: 0, settled: false };
         const player = document.getElementById('movie_player');
         const pApi = player && (player.wrappedJSObject || player);
         if (!pApi || typeof pApi.getAvailableQualityLevels !== 'function') return;
-        let levels;
-        try { levels = pApi.getAvailableQualityLevels(); } catch (e) { return; }
-        if (!levels || !levels.length) return;            // player not ready yet
-        const best = levels[0];                           // ordered highest -> lowest
+        if (player.classList && player.classList.contains('ad-showing')) return;   // the ad's streams
+        const canConfirm = typeof pApi.getPreferredQuality === 'function';
+        let levels, playerVid, preferred, playing;
+        try {
+            levels = [...(pApi.getAvailableQualityLevels() || [])];
+            const data = typeof pApi.getVideoData === 'function' ? pApi.getVideoData() : null;
+            playerVid = data && data.video_id;
+            preferred = canConfirm ? pApi.getPreferredQuality() : '';
+            playing = typeof pApi.getPlayerState === 'function' && pApi.getPlayerState() === 1;
+        } catch (e) { return; }
+        const best = levels.find(level => level !== 'auto');   // ordered highest -> lowest
+        if (!best || (playerVid && playerVid !== vid)) return;  // not this video's streams yet
+        const now = Date.now();
+        if (!qualityTarget.firstSeenAt) qualityTarget.firstSeenAt = now;
+        if (preferred === best) {
+            if (playing || now - qualityTarget.firstSeenAt >= QUALITY_SETTLE_MS) qualityTarget.settled = true;
+            return;
+        }
+        if (qualityTarget.settled && preferred !== 'auto') return;   // picked by hand
         try {
             if (typeof pApi.setPlaybackQualityRange === 'function') pApi.setPlaybackQualityRange(best, best);
             if (typeof pApi.setPlaybackQuality === 'function') pApi.setPlaybackQuality(best);
-            lastQualityVideoId = vid;
         } catch (e) { /* ignore */ }
+        // Without getPreferredQuality nothing can confirm it: one attempt, as before.
+        if (!canConfirm) qualityTarget.settled = true;
     }
 
     /* ==================================================================

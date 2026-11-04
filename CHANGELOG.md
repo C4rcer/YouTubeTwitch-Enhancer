@@ -1,5 +1,15 @@
 # Changelog
 
+## 4.8.10 - 2026-11-04
+
+### Fixed
+
+- Auto max quality could leave a video at YouTube's automatic quality, which follows the player's size (so 720p in a 671-pixel-tall player), for the whole video. It set the quality once, as soon as the player listed any levels, and then treated that video as done. After an in-page navigation (clicking a video, or autoplay moving on) the player already reports the new video with its streams, but about 100 ms later it resets its preference to "auto" while it loads that video's formats, which undid the one attempt. Each pass now re-applies the highest level until the video plays at it (or five seconds have passed), skips an ad's streams and a player still on the previous video, and afterwards corrects only a fall back to "auto", so a quality you pick by hand is kept.
+
+### Validation
+
+- Reproduced live on 2026-11-04 in a background tab: after clicking a sidebar video, the player reported the new video at 2160p after about 0.86 s, had no levels and an "auto" preference at 0.97 s, and kept "auto" with all nine levels listed; setting 2160p again then held for the rest of the check. Two new regressions in `tests/content-filter.test.js` replay that sequence, a hand-picked quality, an ad, and a player still on the previous video; both fail against 4.8.9. Full suite passes 128/128.
+
 ## 4.8.9 - 2026-11-01
 
 ### Fixed

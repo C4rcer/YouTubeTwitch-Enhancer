@@ -161,9 +161,9 @@ function loadContentHarness(watched, options = {}) {
     const dom = options.dom || null;
     const playerData = options.playerData || null;
     const flexyData = options.flexyData || null;
-    const moviePlayer = playerData ? {
+    const moviePlayer = options.player || (playerData ? {
         getVideoData() { return playerData; }
-    } : null;
+    } : null);
     const watchFlexy = flexyData ? {
         getAttribute(name) { return name === 'video-id' ? flexyData.videoId : null; }
     } : null;
@@ -290,6 +290,7 @@ function loadContentHarness(watched, options = {}) {
         restoreDeArrowTitles,
         pruneWatchTitleLeftovers,
         processDeArrowWatchPage,
+        applyMaxQuality,
         beginDeArrowWatchNavigation,
         finishDeArrowWatchNavigation,
         refreshDeArrowWatchTitle,
@@ -1531,4 +1532,81 @@ test('watched-history changes in a hidden tab wait until it is shown', () => {
     api.setHidden(false);
     api.fire('ytb-watched-db-change');
     assert.equal(runAllCalls(), 1);
+});
+
+// YouTube's #movie_player quality API, enough to replay what the player did
+// live (2026-11) during an SPA navigation.
+function fakeQualityPlayer() {
+    const classes = new Set();
+    const player = {
+        vid: 'previousVid',
+        levels: ['hd2160', 'hd1440', 'hd1080', 'hd720', 'large', 'medium', 'small', 'tiny', 'auto'],
+        preferred: 'hd2160',
+        state: 3,
+        sets: 0,
+        classList: {
+            contains: name => classes.has(name),
+            toggle: (name, on) => { if (on) classes.add(name); else classes.delete(name); }
+        },
+        getVideoData() { return { video_id: this.vid }; },
+        getAvailableQualityLevels() { return this.levels.slice(); },
+        getPreferredQuality() { return this.preferred; },
+        getPlayerState() { return this.state; },
+        setPlaybackQualityRange(min) { this.preferred = min; this.sets++; },
+        setPlaybackQuality(quality) { this.preferred = quality; }
+    };
+    return player;
+}
+
+test('max quality survives the reset YouTube does while loading the next video', () => {
+    const player = fakeQualityPlayer();
+    const api = loadContentHarness(new Set(), { player });
+    api.configure({ settings: { enabled: true, maxQuality: true } });
+    const levels = player.levels.slice();
+
+    // SPA navigation: the URL and the player both report the new video,
+    // still carrying the previous video's preference.
+    api.setPath('/watch?v=nextVideo01');
+    player.vid = 'nextVideo01';
+    api.applyMaxQuality();
+
+    // ~100 ms later the player loads that video's formats: no levels, then
+    // the levels again with the preference reset to "auto".
+    player.levels = [];
+    player.preferred = 'auto';
+    api.applyMaxQuality();
+    player.levels = levels;
+    api.applyMaxQuality();
+    assert.equal(player.preferred, 'hd2160', 'the best level is applied again after the reset');
+
+    player.state = 1;   // playing at the best level: settled
+    api.applyMaxQuality();
+    const sets = player.sets;
+
+    // A quality picked by hand afterwards is kept.
+    player.preferred = 'hd720';
+    api.applyMaxQuality();
+    assert.equal(player.preferred, 'hd720');
+
+    // An ad's streams are left alone; a fall back to "auto" after it is fixed.
+    player.classList.toggle('ad-showing', true);
+    player.preferred = 'auto';
+    api.applyMaxQuality();
+    assert.equal(player.sets, sets, 'nothing is applied while an ad plays');
+    player.classList.toggle('ad-showing', false);
+    api.applyMaxQuality();
+    assert.equal(player.preferred, 'hd2160');
+});
+
+test('max quality waits until the player is on the video in the URL', () => {
+    const player = fakeQualityPlayer();
+    const api = loadContentHarness(new Set(), { player });
+    api.configure({ settings: { enabled: true, maxQuality: true } });
+    api.setPath('/watch?v=nextVideo01');
+    player.preferred = 'large';
+    api.applyMaxQuality();
+    assert.equal(player.sets, 0, "the previous video's streams are not this video's");
+    player.vid = 'nextVideo01';
+    api.applyMaxQuality();
+    assert.equal(player.preferred, 'hd2160');
 });
