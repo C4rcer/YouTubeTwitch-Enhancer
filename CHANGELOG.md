@@ -1,5 +1,32 @@
 # Changelog
 
+## 4.8.13 - 2026-11-09
+
+### Fixed
+
+- The speed suite sped up live streams. The default playback speed, a remembered per-channel speed and a playback profile's speed are meant to skip live streams, because a sped-up live stream races to the live edge and stalls. The live check looked for a `ytp-live` class on YouTube's player (`#movie_player`), which YouTube no longer sets, so every live stream counted as a normal video. Playback profiles had never checked for YouTube live streams at all, only Twitch ones. Both now ask YouTube's player API whether the video is live, and trust the answer only once the player is on the video in the address bar: after an in-page navigation the address changes about 150 ms before the player leaves the previous video, and until then the answer still describes that video. Without the player API they fall back to the `ytp-live` switch YouTube now sets on the player's time display, and wait out a preroll ad, which clears it. A profile that still can't tell after 3 seconds applies everything except its speed.
+- The same check kept live streams out of the watched history, so with "Hide already-watched videos" on, a live stream was recorded as watched as soon as it played: it reports a finite duration and plays near its end (at 93% of it on the stream checked), past the 90% threshold. Only a video confirmed as not live is recorded now.
+
+### Validation
+
+- Seen live on 2026-11-09 on Lofi Girl's live stream: `#movie_player` had no `ytp-live` class (it now sits on `.ytp-time-display`, and not while a preroll ad plays), `getVideoData().isLive` was `true` (also during the ads), and the video reported a finite 50390 s duration with playback at about 46790 s. Sampling an in-page navigation from the stream to a normal video every 25 ms, the address showed the new video about 140 ms before the player's `video_id` changed; until then the player, its time display and its live badge all still described the live stream.
+- Checked end to end the same day in a throwaway headless Firefox 147 profile with the add-on installed temporarily, on that live stream and normal videos reached from its sidebar by in-page navigation. Before the fix (the 4.8.12 YouTube code), a 1.75x playback profile played the live stream at 1.75x, and a 1.5x default speed played it at 1.5x after going back to it from a normal video. With the fix the live stream stayed at 1x in all four cases (opened directly or by going back, default speed or profile), while the normal videos still got 1.5x and 1.75x. The watched-history part was not reproduced live; it follows from the 93% position above and has its own regression.
+- Seven new regressions, four in `tests/content-filter.test.js` and three in `tests/player-controls.test.js`, cover the default speed, a profile's speed and the watched history on a live stream, the player's stale answer after navigation in both directions, the fallback without the player API (including a preroll ad), and a profile whose answer never arrives. All seven fail against 4.8.12. Full suite passes 141/141.
+
+## 4.8.12 - 2026-11-07
+
+### Added
+
+- A "Rate it on Firefox Add-ons" link beside the existing Ko-fi link in the popup, both settings pages and the welcome page. It opens the add-on's AMO page in a new tab, and nothing is sent unless you click it.
+
+### Fixed
+
+- Channel points auto-claim announced "Claimed channel points" every 5 seconds while nothing was being claimed. It clicked Twitch's "Claim Bonus" button even while Twitch had it disabled (the grey chest), and it reported success on every click. Twitch disables that button until its claim request settles, and a claim can stay unsettled indefinitely: with `k.twitchcdn.net` blocked (for example by a DNS blocklist), Twitch's anti-bot script never loads, every claim is answered "failed integrity check", and the page waits for a check it cannot pass until it eventually drops the bonus uncredited. A disabled button is now left alone, and each click is followed to its outcome: "Claimed channel points" once Twitch removes the bonus, "Twitch couldn't claim the channel points bonus" after Twitch's error state, and one "Twitch hasn't confirmed the channel points claim" if the button stays disabled for 30 seconds.
+
+### Validation
+
+- Found live on 2026-11-07 on a channel page: the claim component's state was `inProgress: true` with the button disabled, and every ClaimCommunityPoints request returned HTTP 200 with `IntegrityCheckFailed`. Twitch's anti-bot script (`k.twitchcdn.net/…/p.js`) failed to load because the local DNS resolver answered 0.0.0.0, while a public resolver returned real addresses. When the page finally gave up, the bonus disappeared and the balance rose only by the regular watch-time points. The claim flow (disabled until settled, success removes the bonus, an error turns the button red and removes the bonus 2 s later) was read from Twitch's component source in that page. Four new regressions in `tests/twitch.test.js` cover a disabled button, the success notice waiting for the bonus to go, a rejected claim, and a claim that never settles; all four fail against 4.8.11. Full suite passes 134/134.
+
 ## 4.8.11 - 2026-11-04
 
 ### Fixed

@@ -1727,12 +1727,14 @@
         v.dataset.ytbWatchHook = INSTANCE_ID;
         v.addEventListener('timeupdate', () => {
             if (retired || !settings.enabled || !settings.hideWatched) return;
-            if (location.pathname !== '/watch' || isLivePlayer()) return;
+            if (location.pathname !== '/watch') return;
             const vid = watchVideoId();
             if (!vid || vid === watchedMarkedVid) return;
             const dur = v.duration, cur = v.currentTime;
             if (!isFinite(dur) || dur <= 0) return;
-            if ((cur / dur) * 100 >= settings.watchedThreshold) {
+            // A live stream reports a finite duration and plays near its end,
+            // so it would pass any threshold: only a confirmed non-live video counts.
+            if ((cur / dur) * 100 >= settings.watchedThreshold && livePlayerState() === false) {
                 watchedMarkedVid = vid;
                 WatchedDB.markWatched(vid);
                 const owner = getWatchPageOwnerInfo();
@@ -4162,7 +4164,7 @@
             const speed = Number(event.detail.speed);
             if (Number.isFinite(speed) && speed >= 0.1 && speed <= 8) {
                 const video = playerVideo();
-                if (video && !isLivePlayer()) setPlaybackRate(video, speed);
+                if (video && livePlayerState() === false) setPlaybackRate(video, speed);
                 lastSpeedVideoId = watchVideoId();
                 speedTries = 0;
             }
@@ -4274,9 +4276,37 @@
     let speedTries = 0;
     let speedSaveTimer = null;
 
-    function isLivePlayer() {
+    // Whether the main player is on a live stream: true or false, or null
+    // while that can't be told yet. YouTube no longer puts "ytp-live" on
+    // #movie_player (seen live 2026-11-09: only .ytp-time-display carries it,
+    // and not during a preroll ad), so this asks the player API, which still
+    // says so directly. Its video data names the video it describes: an SPA
+    // navigation changes the URL about 150 ms before the player leaves the
+    // previous video, and until then the answer is about that video.
+    function livePlayerState() {
         const p = document.getElementById('movie_player');
-        return !!(p && p.classList.contains('ytp-live'));
+        if (!p) return false;
+        const data = playerLiveData(p);
+        if (data) {
+            const vid = watchVideoId();
+            if (vid && data.videoId && data.videoId !== vid) return null;
+            return data.isLive;
+        }
+        // No player API: fall back to the switch YouTube's own CSS shows the
+        // live badge from. A preroll ad clears it, so wait the ad out.
+        if (p.classList && p.classList.contains('ad-showing')) return null;
+        return !!(p.querySelector && p.querySelector('.ytp-time-display.ytp-live'));
+    }
+
+    function playerLiveData(p) {
+        try {
+            const pApi = p.wrappedJSObject || p;
+            const data = typeof pApi.getVideoData === 'function' ? pApi.getVideoData() : null;
+            if (data && typeof data.isLive === 'boolean') {
+                return { videoId: String(data.video_id || ''), isLive: data.isLive };
+            }
+        } catch (e) { /* use the DOM signal */ }
+        return null;
     }
 
     function channelSpeedKey(info) {
@@ -4310,7 +4340,9 @@
         if (!vid || vid === lastSpeedVideoId) return;
         const v = playerVideo();
         if (!v || v.readyState < 1) return;   // metadata not there yet
-        if (isLivePlayer()) { lastSpeedVideoId = vid; return; }
+        const live = livePlayerState();
+        if (live === null) return;            // player still on the previous video
+        if (live) { lastSpeedVideoId = vid; return; }
         let target = settings.ytSpeedDefault || 1;
         if (settings.ytSpeedPerChannel) {
             const key = channelSpeedKey(getWatchPageOwnerInfo());
