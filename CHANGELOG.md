@@ -1,5 +1,16 @@
 # Changelog
 
+## 4.8.14 - 2026-11-16
+
+### Fixed
+
+- Return YouTube Dislike showed nothing on Firefox for Android: no dislike count, and no like count either. Android gets m.youtube.com, which has no `ytd-watch-metadata`; the add-on only looked for the dislike button inside that element, so it never found one. m.youtube.com puts icon-only like and dislike buttons in `ytm-slim-video-action-bar-renderer`, and neither shows a count. With RYD on, the dislike button there now gets RYD's count, the same local +1 for your own dislike as on desktop. The like button gets YouTube's own count, read from its label ("like this video along with 3,081 other people"), and falls back to RYD's like count when the label doesn't hold exactly one plain number. YouTube gives that label the same text pressed or not, so liking adds nothing. Desktop is unchanged: its like button already prints YouTube's count, and only like buttons without a text label get one.
+
+### Validation
+
+- Reproduced and checked on 2026-11-16 in a throwaway headless Firefox 147 profile with a Firefox for Android user agent (`Android 15; Mobile`), a 412 x 915 viewport and the add-on installed temporarily, so YouTube served m.youtube.com. Before the fix, Rick Astley's "Never Gonna Give You Up" showed bare like and dislike icons. After it, the buttons read 19.5M and 522K, and "Me at the zoo" read 20.1M (the label's 20,139,915, against RYD's 20,139,606) and 452.6K. An in-page navigation to a related video switched both counts to the new video (3.1K / 226). The page's own button data showed the like label identical in its default and toggled states. The wider buttons push m.youtube.com's action bar to 467 px on a 412 px screen, so the Report button scrolls into view with the rest of the bar, which already scrolls sideways. Desktop www.youtube.com in the same profile still showed YouTube's "19m" on the like button with nothing added, and 522K on the dislike button.
+- Three new regressions in `tests/content-filter.test.js` cover both counts on the mobile action bar (and none on a comment's dislike button), the fallback to RYD's like count for a label without one plain number, and a like button left blank when neither count exists. All three fail against 4.8.13. Full suite passes 144/144. Not yet checked on a real Android phone.
+
 ## 4.8.13 - 2026-11-09
 
 ### Fixed
