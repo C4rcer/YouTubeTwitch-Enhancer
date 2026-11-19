@@ -288,6 +288,28 @@ test('configured keyboard and wheel actions handle media and show conflicts nowh
     assert.equal(wheel.prevented, true);
 });
 
+test('YouTube volume shortcuts step the player volume, not a loudness-normalized element', async () => {
+    const harness = buildHarness({
+        settings: { enabled: true },
+        inputBindings: {
+            youtube: { enabled: true, keyboard: {}, mouse: {}, wheel: { volumeDown: 'WheelDown' } }
+        }
+    });
+    await settle();
+    // Live 2026-11 on NU75uz0b8EU: slider 100%, element 0.497.
+    let volume = 100;
+    Object.assign(harness.player, {
+        getVolume: () => volume,
+        setVolume(value) { volume = value; harness.video.volume = value / 100 * 0.497; },
+        isMuted: () => false
+    });
+    harness.video.volume = 0.497;
+    harness.fire('wheel', { deltaY: 1 });
+    assert.equal(volume, 95, 'one step down from YouTube\'s 100%, not from the element\'s 50%');
+    const osd = harness.document.getElementById('ytb-input-osd');
+    assert.equal(osd && osd.textContent, 'Volume 95%');
+});
+
 test('configured shortcuts are ignored in editable targets', async () => {
     const harness = buildHarness({
         settings: { enabled: true, ytSpeedHotkeys: true },

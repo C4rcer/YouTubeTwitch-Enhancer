@@ -1,5 +1,22 @@
 # Changelog
 
+## 4.8.15 - 2026-11-19
+
+### Fixed
+
+- The volume boost slider never appeared on loud videos. It is meant to show once YouTube's volume is at 100%, but the add-on read that from the `<video>` element. YouTube's loudness normalization plays a loud master below full volume with its slider at 100%: Ephixa's "Lost Woods Dubstep Remix" (+6.08 dB) plays at 0.497. The boost slider, scroll-for-volume, playback profiles and the volume shortcuts now read YouTube's own volume and set it through the player, so YouTube's slider and its saved volume follow. They read it from the player API, then the slider's `aria-valuenow`, then the element.
+- On those videos the boost also started from the wrong level. Going past 100% forced the element to full volume, so the first step, 105%, came out about 2.1 times as loud as 100%. The boost now multiplies YouTube's normalized level: 105% is 5% louder than 100% on every video, and 200% on that video equals its un-normalized level. A boost you already had therefore sounds quieter than before on loud videos. Scrolling below 100% also wrote the element directly: it showed "55%" while YouTube's slider still said 100%. It now moves YouTube's slider. The volume shortcuts had the same problem, and on that video stepped down from 50%.
+
+### Validation
+
+- Seen live on 2026-11-19 in Firefox on NU75uz0b8EU. The player's `audioConfig` gave `loudnessDb` 6.08, and stats for nerds read "100%/50%". `getVolume()` returned 100, and `setVolume(100)` put the element at 0.497, which is 10^(-6.08/20).
+- Checked end to end the same day in a throwaway headless Firefox 147 profile, with the add-on installed temporarily and real wheel input over the player.
+  - With 4.8.14 at YouTube's 100%, the slider was hidden. One scroll up showed "55%" and set the element to 0.55 while YouTube's slider stayed at 100.
+  - With the fix, the slider showed at 100%. One scroll up gave a 105% boost with the element still at 0.497 and YouTube at 100. Two scrolls down set YouTube's volume to 95 (element 0.472) and hid the slider.
+  - On "Me at the zoo" (-9.67 dB, element at 1.0) the fix behaves as before: the slider shows at 100%, scrolling gives a 105% boost, then 95.
+- Not checked live: the boost's actual gain (its Web Audio graph lives in the content script, out of the page's reach), the volume shortcuts, and the re-pin when YouTube lowers its own volume during a boost.
+- Three new regressions. Two in `tests/content-filter.test.js` cover the slider and the wheel against a normalizing player, and the fallbacks without the player API. One in `tests/player-controls.test.js` covers a volume shortcut stepping from YouTube's 100%. The slider and shortcut regressions fail against 4.8.14. Full suite passes 147/147.
+
 ## 4.8.14 - 2026-11-16
 
 ### Fixed

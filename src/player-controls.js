@@ -188,6 +188,32 @@
         }
     }
 
+    // On YouTube the volume steps go through the player's own volume (0-100,
+    // what its slider shows). The element's volume differs from it because
+    // loudness normalization plays a loud master at 0.497 with the slider at
+    // 100% (verified live 2026-11 on NU75uz0b8EU). Returns the new percent.
+    function stepVolume(video, step) {
+        if (SITE === 'youtube') {
+            try {
+                const player = document.getElementById('movie_player');
+                const pageApi = player && (player.wrappedJSObject || player);
+                const current = pageApi && typeof pageApi.getVolume === 'function' &&
+                    typeof pageApi.setVolume === 'function' ? Number(pageApi.getVolume()) : NaN;
+                if (Number.isFinite(current)) {
+                    const level = Math.min(100, Math.max(0, Math.round(current + step)));
+                    pageApi.setVolume(level);
+                    if (level > 0 && typeof pageApi.isMuted === 'function' && pageApi.isMuted() &&
+                        typeof pageApi.unMute === 'function') pageApi.unMute();
+                    if (level > 0) video.muted = false;
+                    return level;
+                }
+            } catch (error) { /* step the element below */ }
+        }
+        video.volume = Math.min(1, Math.max(0, video.volume + step / 100));
+        if (video.volume > 0) video.muted = false;
+        return Math.round(video.volume * 100);
+    }
+
     function setSpeed(video, value) {
         if (!video || (SITE === 'twitch' && isLiveTwitch())) return false;
         const speed = Math.min(8, Math.max(0.1, Math.round(value * 100) / 100));
@@ -255,10 +281,7 @@
             return setSpeed(video, 1);
         case 'volumeDown':
         case 'volumeUp':
-            video.volume = Math.min(1, Math.max(0, video.volume +
-                (action === 'volumeDown' ? -0.05 : 0.05)));
-            if (video.volume > 0) video.muted = false;
-            showOsd('Volume ' + Math.round(video.volume * 100) + '%');
+            showOsd('Volume ' + stepVolume(video, action === 'volumeDown' ? -5 : 5) + '%');
             return true;
         case 'mute':
             video.muted = !video.muted;

@@ -290,6 +290,9 @@ function loadContentHarness(watched, options = {}) {
         getSettings() { return settings; },
         rebuildDerived,
         setVolumeBoost,
+        nativeAtMax,
+        nativeVolume,
+        onPlayerWheel,
         rememberHiddenVideo,
         saveOnly,
         spyRunAll() {
@@ -1471,6 +1474,78 @@ test('a profile volume boost survives storage reloads until changed by hand', ()
     api.fire('ytb-apply-playback-profile', { site: 'youtube', speed: 1.5, volumeBoost: null });
     api.rebuildDerived();
     assert.equal(api.getSettings().volumeBoost, 1, 'a profile without a boost uses the base');
+});
+
+// Loudness normalization as seen live 2026-11 on NU75uz0b8EU (loudnessDb
+// 6.08): YouTube's slider reads 100 while the element plays at 0.497.
+function normalizingPlayer(factor) {
+    const video = { volume: factor, muted: false, dataset: {} };
+    const calls = [];
+    let volume = 100, muted = false;
+    const player = {
+        getVolume: () => volume,
+        setVolume(value) { calls.push(value); volume = value; video.volume = value / 100 * factor; },
+        isMuted: () => muted,
+        mute() { muted = true; video.muted = true; },
+        unMute() { muted = false; video.muted = false; },
+        getVideoData: () => null,
+        appendChild() {},
+        closest: selector => selector === '#movie_player' ? player : null
+    };
+    const dom = {
+        querySelector: selector => /^video/.test(selector) ? video : null,
+        querySelectorAll: () => []
+    };
+    const wheel = deltaY => ({ deltaY, target: player, preventDefault() {}, stopPropagation() {} });
+    return { video, player, dom, calls, wheel };
+}
+
+test('the volume boost follows YouTube\'s slider, not a loudness-normalized element', () => {
+    const yt = normalizingPlayer(0.497);
+    const api = loadContentHarness(new Set(), { player: yt.player, dom: yt.dom });
+    api.configure({ settings: {
+        enabled: true, volumeBoost: 1, wheelVolume: true,
+        blockShorts: false, hideSidebarSpinner: false, hideEndScreen: false
+    } });
+    api.setPath('/watch?v=NU75uz0b8EU');
+
+    assert.equal(api.nativeVolume(yt.video), 100);
+    assert.equal(api.nativeAtMax(yt.video), true, 'the boost slider shows at YouTube\'s 100%');
+
+    api.onPlayerWheel(yt.wheel(-1));
+    assert.equal(api.getSettings().volumeBoost, 1.05, 'one notch past 100% starts the boost');
+    assert.equal(yt.video.volume, 0.497, 'the normalized level stays under the boost');
+
+    api.onPlayerWheel(yt.wheel(1));
+    api.onPlayerWheel(yt.wheel(1));
+    assert.equal(api.getSettings().volumeBoost, 1);
+    assert.deepEqual(yt.calls.slice(-1), [95], 'below 100% the wheel moves YouTube\'s own volume');
+    assert.equal(api.nativeAtMax(yt.video), false);
+
+    yt.player.mute();
+    assert.equal(api.nativeAtMax(yt.video), false, 'muted is never at max');
+    api.onPlayerWheel(yt.wheel(-1));
+    assert.equal(yt.player.isMuted(), false, 'turning the volume up unmutes through the player');
+});
+
+test('without the player API the boost reads the volume slider, then the element', () => {
+    const video = { volume: 0.5, muted: false };
+    const panel = { getAttribute: name => name === 'aria-valuenow' ? '100' : null };
+    let withPanel = true;
+    const dom = {
+        querySelector(selector) {
+            if (/^video/.test(selector)) return video;
+            if (withPanel && selector.includes('.ytp-volume-panel')) return panel;
+            return null;
+        },
+        querySelectorAll: () => []
+    };
+    const api = loadContentHarness(new Set(), { player: { getVideoData: () => null }, dom });
+    api.configure({ settings: { enabled: true, blockShorts: false, hideSidebarSpinner: false, hideEndScreen: false } });
+    assert.equal(api.nativeAtMax(video), true);
+    withPanel = false;
+    assert.equal(api.nativeVolume(video), 50);
+    assert.equal(api.nativeAtMax(video), false);
 });
 
 test('hidden-video details go to their own key, folded with an old in-record copy', async () => {
